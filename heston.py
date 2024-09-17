@@ -14,27 +14,27 @@ class Heston():
                        'mean_reversion': 1,
                        'vol_vol': 1}
     
-    def brownian_motion(self, num_steps):
+    def brownian_motion(self, num_steps, n):
         rho = self.params['rho']
         cov = np.array([[1, rho], [rho, 1]])
         L = la.cholesky(cov)
         
         # Stratified sampling of 100^2 strata for the first step
-        bm = uniform(size=(100,100,1,2))/100
-        offsets = np.tile(np.arange(100)/100, (100,1))
+        bm = uniform(size=(n,n,1,2))/n
+        offsets = np.tile(np.arange(n)/n, (n,1))
         offsets = np.expand_dims(np.dstack((offsets, offsets.T)), axis=2)
         bm += offsets
         bm = norm.ppf(bm)
         bm = L @ bm # stratified samples. Each strata has equal weight since they are defined by percentiles
         
-        bm = np.concatenate((bm, multivariate_normal([0, 0], cov, (100, 100, num_steps-1))), axis=2)
+        bm = np.concatenate((bm, multivariate_normal([0, 0], cov, (n, n, num_steps-1))), axis=2)
         
         return bm
     
-    def sim_path(self, r, S_0, dt, num_steps):
+    def sim_path(self, r, S_0, dt, num_steps, n=1000):
         # r is a list of risk-free interest rates by history
-        bm = self.brownian_motion(num_steps)
-        path = np.empty([100,100,num_steps+1,2])
+        bm = self.brownian_motion(num_steps, n)
+        path = np.empty([n,n,num_steps+1,2])
         path[:,:,0,0] = np.log(S_0)
         path[:,:,0,1] = self.params['vol_0']
         
