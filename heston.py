@@ -13,7 +13,7 @@ class Heston():
                        'r': r}
         self.S_0 = S_0
         self.payoff = None
-        self.optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        self.optimizer = optim.Adam(self.params(), lr=1e-3)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(self.device)
     
