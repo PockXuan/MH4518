@@ -57,7 +57,7 @@ class Heston():
         assert self.payoff is not None
         
         bm_1 = self.brownian_motion(num_steps, n)
-        Y_1 = self.sim_path(r, S_0, dt, bm_1, num_steps, n=1000)
+        Y_1 = self.sim_path(r, S_0, dt, bm_1, num_steps)
         Y_mean = np.mean(Y_1[:,:,-1,0])
         X_1 = self.payoff(Y_1)
         X_mean = np.mean(X_1)
@@ -66,8 +66,8 @@ class Heston():
         del X_1, Y_1, bm_1 # Hopefully this makes it faster
         
         bm_2 = self.brownian_motion(num_steps, n)
-        Y_2 = self.sim_path(r, S_0, dt, bm_2, num_steps, n=1000)
-        Y_2_anti = self.sim_path(r, S_0, dt, -bm_2, num_steps, n=1000) # Antithetic variate
+        Y_2 = self.sim_path(r, S_0, dt, bm_2, num_steps)
+        Y_2_anti = self.sim_path(r, S_0, dt, -bm_2, num_steps) # Antithetic variate
         X_2 = self.payoff(Y_2)
         X_2_anti = self.payoff(Y_2_anti)
         del bm_2
