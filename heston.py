@@ -1,6 +1,4 @@
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 
 class Heston():
@@ -27,7 +25,8 @@ class Heston():
         bm = sobol_engine.draw(2 * m).reshape(m,2,-1)
         
         # Importance sampling by mapping onto a heavier-tailed normal distribution
-        # This results in a weight of \Phi(x) / \Phi(x/2.5)
+        # Selection of 2.5 is arbitrary, can experiment with different tail fatnesses
+        # This results in a weight of normalpdf(x) / normal(x/2.5)
         bm = torch.distributions.Normal(0, 2.5).icdf(bm)
         
         # Mapping samples to the required correlated distribution
