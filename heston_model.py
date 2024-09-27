@@ -21,6 +21,9 @@ class HestonModel:
             'S0': None,
             'r': None
         }
+        
+        # Initial values from the paper
+        self.params = torch.tensor([1.2, 0.2, 0.3, -0.6, 0.2]).to(device)
     
     def pricing(self, parameters, market_data, u, w):
         
@@ -146,8 +149,6 @@ class HestonModel:
         self.market['S0'] = torch.tensor([S0]).to(device)
         self.market['r'] = torch.tensor([r]).to(device)
         
-        # Initial values from the paper
-        parameters = torch.tensor([1.2, 0.2, 0.3, -0.6, 0.2]).to(device)
         u = torch.tensor(x64).to(device).reshape(-1,1)
         w = torch.tensor(w64).to(device).reshape(-1,1)
         
@@ -155,7 +156,7 @@ class HestonModel:
         # They also used an initial damping factor equal to time to maturity, which is fucking huge; the default is 1e-3
         # Therefore I decided to use default. All other parameters as well
         # In particular, max_iter is 100, where in the paper the results are pretty good after less than 20
-        return lsq_lma(parameters,
+        return lsq_lma(self.params,
                        self.pricing,
                        self.jacobian,
                        (self.market, u, w))
