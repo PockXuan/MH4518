@@ -64,7 +64,7 @@ class HestonModel:
         integrand = w.reshape(-1,1) * 0.5 * u_max * (integrand[:num_nodes,:] + integrand[num_nodes:,:])
         integrand = torch.sum(integrand, dim=0) * torch.exp(-r * T.reshape(-1,1)) / np.pi
         
-        return integrand
+        return offset + integrand
         
     def jacobian(self, parameters, market_data, u, w):
         
@@ -153,7 +153,7 @@ class HestonModel:
         
         # The paper used a tolerance of 1e-10. Default is 1e-8 which should be good enough
         # They also used an initial damping factor equal to time to maturity, which is fucking huge; the default is 1e-3
-        # Therefore I decided to us default. All other parameters as well
+        # Therefore I decided to use default. All other parameters as well
         # In particular, max_iter is 100, where in the paper the results are pretty good after less than 20
         return lsq_lma(parameters,
                        self.pricing,
