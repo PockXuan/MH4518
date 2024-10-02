@@ -12,6 +12,7 @@ w64 = [0.0486909570091397203833654,0.0485754674415034269347991,0.048344762234802
 standard_normal = torch.distributions.Normal(torch.tensor([0]).to(device), torch.tensor([1]).to(device))
 
 class HestonModel:
+    
     def __init__(self):
         
         self.market = {
@@ -19,14 +20,14 @@ class HestonModel:
             'T': None,
             'S0': None,
             'r': None,
-            'asset_cross_covariance': None
+            'asset_cross_correlation': None
         }
         
         # Initial values from the paper [V0,theta,rho,kappa,sigma]
         self.params = torch.tensor([[1.2], 
                                     [0.2], 
-                                    [0.3], 
-                                    [-0.6], 
+                                    [-0.3], 
+                                    [0.6], 
                                     [0.2]], requires_grad=True).to(device)
         
         self.quad = {'u': None,
@@ -185,6 +186,12 @@ class HestonModel:
         # Paper is found at https://papers.ssrn.com/sol3/papers.cfm?abstract_id=946405
         # An easy guide is available at https://medium.com/@alexander.tsoskounoglou/simulating-the-heston-model-with-quadratic-exponential-50cf2b1366b5
         
+        # u is an array of normally drawn values in the form (path #, timestep #, stock/vol)
+        assert 1 <= psic and psic <= 2
+        assert u.shape[2] == 2
+        
+        numsteps = u.shape[1]
+        
         V0 = self.params[0]
         theta = self.params[1]
         rho = self.params[2]
@@ -193,11 +200,11 @@ class HestonModel:
         
         S0 = self.market['S0']
         r = self.market['r']
+        L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
+        u = (L @ u.reshape(-1,2,1)).reshape(-1, numsteps, 2)
+        uniform = torch.rand(u.shape)
         
-        # u is an array of normally drawn values in the form (path #, timestep #, stock/vol)
-        assert 1 <= psic and psic <= 2
-        assert u.shape[2] == 2
-        path = torch.empty((u.shape[0], u.shape[1]+1, 2), device=device)
+        path = torch.empty((u.shape[0], numsteps + 1, 2), device=device)
         path[:,0,0] = torch.log(S0)
         path[:,0,1] = V0
         
@@ -216,7 +223,7 @@ class HestonModel:
         x4 = gamma2 * dt * (1 - rho**2)
         
         with tqdm(total=u.shape[1], desc="Simulation Progress") as pbar:
-            for i in range(u.shape[1]):
+            for i in range(numsteps):
                 
                 # Volatility update
                 s2 = path[:,i,1] * v1 + v2
@@ -231,12 +238,14 @@ class HestonModel:
             
                 path[:,i+1,1] = torch.where(psi <= psic, \
                                             a * (torch.sqrt(b2) + u[:,i,1])**2, \
-                                            torch.where(standard_normal.icdf(u[:,i,1]) <= p, \
+                                            torch.where(uniform[:,i,1] <= p, \
                                                         0, \
-                                                        torch.log((1 - p) / (1 - standard_normal.icdf(u[:,i,1]))) / beta))
+                                                        torch.log((1 - p) / (1 - uniform[:,i,1])) / beta))
                 
                 # log stock price update
                 path[:,i+1,0] = path[:,i,0] + x0 + x1 * path[:,i,1] + x2 * path[:,i+1,1] + torch.sqrt(x3 * path[:,i,1] + x4 * path[:,i+1,1]) * u[:,i,0]
+                pbar.update()
+                
             pbar.close()
             
         return path
@@ -254,6 +263,8 @@ class HestonModel:
         # fully determined by the stock-stock covariance, with the exception of a stock and its 
         # corresponding volatility, which has correlation rho
         
+        numsteps = u.shape[2]
+        
         V0 = self.params[0]
         theta = self.params[1]
         rho = self.params[2]
@@ -262,30 +273,34 @@ class HestonModel:
         
         S0 = self.market['S0']
         r = self.market['r']
+        ccc = self.market['asset_cross_correlation']
         
         # u is an array of normally drawn values in the form (path #, asset #, timestep #, stock/vol)
         assert 1 <= psic and psic <= 2
-        assert u.shape[3] == 2 * n
-        u = standard_normal.icdf(u) # However the decorrelator requires normal variables. To reuse code from earlier, this will be converted back promptly
+        assert u.shape[1] == n
+        assert u.shape[3] == 2
+        uniform = torch.exp(standard_normal.log_prob(u))
         
         # Correlation matrix
-        offdiag = torch.tensor([[self.heston_model.market['asset_cross_covariance'], 0], [0, 0]]).repeat(n,n)
-        offdiag.diagonal().zero_()
+        offdiag = torch.tensor([[ccc, rho*ccc], [rho*ccc, rho*rho*ccc]])
+        offdiag = offdiag.repeat(n,n) - torch.block_diag(*offdiag.repeat(n,1,1))
         corr = torch.tensor([[1, rho], [rho, 1]]).unsqueeze(0).repeat(n,1,1)
         corr = torch.block_diag(*corr).to(device) + offdiag
-        Q_inv = torch.inv(torch.tensor([[torch.sqrt(1 - rho**2), rho], [0, 1]])).unsqueeze(0).repeat(n,1,1).to(device)
+        Q_inv = torch.linalg.inv(torch.tensor([[torch.sqrt(1 - rho**2), rho], [0, 1]])).unsqueeze(0).repeat(n,1,1).to(device)
         
-        R = torch.cholesky(corr) # If this doesn't work then I guess we are fucked
+        R = torch.linalg.cholesky(corr)
         Q_inv = torch.block_diag(*Q_inv)
         # This worked experimentally, don't ask me
         num_paths, num_assets, num_timesteps, _ = u.shape
         u = Q_inv @ R @ u.transpose(2,3).flatten(1,2)
-        u = u.reshape(num_paths, num_assets, num_timesteps, 2) # I just fucking pray to god this works LOL
-        u = torch.exp(standard_normal.log_prob(u)) # u is now restored to a uniform distribution
+        L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
+        u = (L @ u.reshape(-1,2,1)).reshape(-1, n, numsteps, 2)
+        u = u.reshape(num_paths, num_assets, num_timesteps, 2)
+        uniform = torch.rand(u.shape)
         
-        path = torch.empty((u.shape[0], u.shape[1]+1, 2), device=device)
-        path[:,0,0] = torch.log(S0)
-        path[:,0,1] = V0
+        path = torch.empty((u.shape[0], n, u.shape[2]+1, 2), device=device)
+        path[:,:,0,0] = torch.log(S0)
+        path[:,:,0,1] = V0
         
         v1 = sigma**2 * torch.exp(-kappa * dt) * (1 - torch.exp(-kappa * dt)) / kappa
         v2 = theta * sigma**2 * (1 - torch.exp(-kappa * dt))**2 / 2 / kappa
@@ -301,8 +316,8 @@ class HestonModel:
         x3 = gamma1 * dt * (1 - rho**2)
         x4 = gamma2 * dt * (1 - rho**2)
         
-        with tqdm(total=u.shape[1], desc="Simulation Progress") as pbar:
-            for i in range(u.shape[1]):
+        with tqdm(total=u.shape[2], desc="Simulation Progress") as pbar:
+            for i in range(u.shape[2]):
                 
                 # Volatility update
                 s2 = path[:,:,i,1] * v1 + v2
@@ -317,12 +332,13 @@ class HestonModel:
             
                 path[:,:,i+1,1] = torch.where(psi <= psic, \
                                               a * (torch.sqrt(b2) + u[:,:,i,1])**2, \
-                                              torch.where(standard_normal.icdf(u[:,:,i,1]) <= p, \
+                                              torch.where(uniform[:,:,i,1] <= p, \
                                                           0, \
-                                                          torch.log((1 - p) / (1 - standard_normal.icdf(u[:,:,i,1]))) / beta))
+                                                          torch.log((1 - p) / (1 - uniform[:,:,i,1])) / beta))
                 
                 # log stock price update
                 path[:,:,i+1,0] = path[:,:,i,0] + x0 + x1 * path[:,:,i,1] + x2 * path[:,:,i+1,1] + torch.sqrt(x3 * path[:,:,i,1] + x4 * path[:,:,i+1,1]) * u[:,:,i,0]
+                pbar.update()
             pbar.close()
         
         return path
@@ -409,9 +425,7 @@ class HestonModel:
 
         return p_list       
 
-if __name__ == "__main__":
-    
-    # Calibration test
+def calibration_test():
     
     karr = [0.9371, 0.8603, 0.8112, 0.7760, 0.7470, 0.7216, 0.6699, 0.6137,
             0.9956, 0.9868, 0.9728, 0.9588, 0.9464, 0.9358, 0.9175, 0.9025,
@@ -430,8 +444,83 @@ if __name__ == "__main__":
 
     model = HestonModel()
     print(model.calibrate(karr, tarr, S0, r))
+
+def single_simulation_test(S0, r):
     
-    # TODO #
-    # Simulation test
+    numsteps = 10000
+    
+    sobol_engine = torch.quasirandom.SobolEngine(2 * numsteps, True)
+    paths = sobol_engine.draw(20)
+    paths = paths.reshape(-1, numsteps, 2)
+    paths = standard_normal.icdf(paths)
+    
+    model = HestonModel()
+    model.market['S0'] = torch.tensor([S0], device=device)
+    model.market['r'] = torch.tensor([r], device=device)
+    
+    simulation = model.single_asset_path(paths, 1/365)
+    
+    plt.plot(simulation[:,:,0].T.detach().numpy())
+    plt.title("Log price")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(torch.exp(simulation[:,:,0]).T.detach().numpy())
+    plt.title("Price")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(simulation[:,:,1].T.detach().numpy())
+    plt.title("Volatility")
+    plt.show()
+    plt.clf()
+    
+    return simulation
+    
+def multi_simulation_test(S0, r, asset_cross_covariance, n):
+    
+    numsteps = 1000
+    
+    sobol_engine = torch.quasirandom.SobolEngine(2 * n * numsteps, True)
+    paths = sobol_engine.draw(20)
+    paths = paths.reshape(-1, n, numsteps, 2)
+    paths = standard_normal.icdf(paths)
+    
+    model = HestonModel()
+    model.market['S0'] = torch.tensor([S0], device=device)
+    model.market['r'] = torch.tensor([r], device=device)
+    model.market['asset_cross_correlation'] = torch.tensor([asset_cross_covariance], device=device)
+    
+    simulation = model.multi_asset_path(paths, 1 / 365, n=n)
+    
+    for i in range(n):
+        plt.plot(simulation[:,i,:,0].T.detach().numpy())
+    plt.title("Log price")
+    plt.show()
+    plt.clf()
+        
+    for i in range(n):
+        plt.plot(torch.exp(simulation[:,i,:,0]).T.detach().numpy())
+    plt.title("Price")
+    plt.show()
+    plt.clf()
+    
+    for i in range(n):
+        plt.plot(simulation[:,i,:,1].T.detach().numpy())
+    plt.title("Volatility")
+    plt.show()
+    plt.clf()
+    
+    return simulation
+    
+
+if __name__ == "__main__":
+    
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    calibration_test()
+    single_simulation_test(1.0, 0.02)
+    multi_simulation_test(1.0, 0.02, 0.2, 3)
         
     
