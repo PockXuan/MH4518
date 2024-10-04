@@ -1,13 +1,20 @@
 import numpy as np
 import torch
-import torch.func as F
 from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 64 node Gaussian-Legendre quadrature as recommended
-x64 = [0.0243502926634244325089558,0.0729931217877990394495429,0.1214628192961205544703765,0.1696444204239928180373136,0.2174236437400070841496487,0.2646871622087674163739642,0.3113228719902109561575127,0.3572201583376681159504426,0.4022701579639916036957668,0.4463660172534640879849477,0.4894031457070529574785263,0.5312794640198945456580139,0.5718956462026340342838781,0.6111553551723932502488530,0.6489654712546573398577612,0.6852363130542332425635584,0.7198818501716108268489402,0.7528199072605318966118638,0.7839723589433414076102205,0.8132653151227975597419233,0.8406292962525803627516915,0.8659993981540928197607834,0.8893154459951141058534040,0.9105221370785028057563807,0.9295691721319395758214902,0.9464113748584028160624815,0.9610087996520537189186141,0.9733268277899109637418535,0.9833362538846259569312993,0.9910133714767443207393824,0.9963401167719552793469245,0.9993050417357721394569056]
-w64 = [0.0486909570091397203833654,0.0485754674415034269347991,0.0483447622348029571697695,0.0479993885964583077281262,0.0475401657148303086622822,0.0469681828162100173253263,0.0462847965813144172959532,0.0454916279274181444797710,0.0445905581637565630601347,0.0435837245293234533768279,0.0424735151236535890073398,0.0412625632426235286101563,0.0399537411327203413866569,0.0385501531786156291289625,0.0370551285402400460404151,0.0354722132568823838106931,0.0338051618371416093915655,0.0320579283548515535854675,0.0302346570724024788679741,0.0283396726142594832275113,0.0263774697150546586716918,0.0243527025687108733381776,0.0222701738083832541592983,0.0201348231535302093723403,0.0179517157756973430850453,0.0157260304760247193219660,0.0134630478967186425980608,0.0111681394601311288185905,0.0088467598263639477230309,0.0065044579689783628561174,0.0041470332605624676352875,0.0017832807216964329472961]
+# # 64 node Gaussian-Legendre quadrature is recommended
+# x64 = [0.0243502926634244325089558,0.0729931217877990394495429,0.1214628192961205544703765,0.1696444204239928180373136,0.2174236437400070841496487,0.2646871622087674163739642,0.3113228719902109561575127,0.3572201583376681159504426,0.4022701579639916036957668,0.4463660172534640879849477,0.4894031457070529574785263,0.5312794640198945456580139,0.5718956462026340342838781,0.6111553551723932502488530,0.6489654712546573398577612,0.6852363130542332425635584,0.7198818501716108268489402,0.7528199072605318966118638,0.7839723589433414076102205,0.8132653151227975597419233,0.8406292962525803627516915,0.8659993981540928197607834,0.8893154459951141058534040,0.9105221370785028057563807,0.9295691721319395758214902,0.9464113748584028160624815,0.9610087996520537189186141,0.9733268277899109637418535,0.9833362538846259569312993,0.9910133714767443207393824,0.9963401167719552793469245,0.9993050417357721394569056]
+# w64 = [0.0486909570091397203833654,0.0485754674415034269347991,0.0483447622348029571697695,0.0479993885964583077281262,0.0475401657148303086622822,0.0469681828162100173253263,0.0462847965813144172959532,0.0454916279274181444797710,0.0445905581637565630601347,0.0435837245293234533768279,0.0424735151236535890073398,0.0412625632426235286101563,0.0399537411327203413866569,0.0385501531786156291289625,0.0370551285402400460404151,0.0354722132568823838106931,0.0338051618371416093915655,0.0320579283548515535854675,0.0302346570724024788679741,0.0283396726142594832275113,0.0263774697150546586716918,0.0243527025687108733381776,0.0222701738083832541592983,0.0201348231535302093723403,0.0179517157756973430850453,0.0157260304760247193219660,0.0134630478967186425980608,0.0111681394601311288185905,0.0088467598263639477230309,0.0065044579689783628561174,0.0041470332605624676352875,0.0017832807216964329472961]
+
+# # 96 nodes
+# x96 = [0.0162767448496029695791346,0.0488129851360497311119582,0.0812974954644255589944713,0.1136958501106659209112081,0.1459737146548969419891073,0.1780968823676186027594026,0.2100313104605672036028472,0.2417431561638400123279319,0.2731988125910491414872722,0.3043649443544963530239298,0.3352085228926254226163256,0.3656968614723136350308956,0.3957976498289086032850002,0.4254789884073005453648192,0.4547094221677430086356761,0.4834579739205963597684056,0.5116941771546676735855097,0.5393881083243574362268026,0.5665104185613971684042502,0.5930323647775720806835558,0.6189258401254685703863693,0.6441634037849671067984124,0.6687183100439161539525572,0.6925645366421715613442458,0.7156768123489676262251441,0.7380306437444001328511657,0.7596023411766474987029704,0.7803690438674332176036045,0.8003087441391408172287961,0.8194003107379316755389996,0.8376235112281871214943028,0.8549590334346014554627870,0.8713885059092965028737748,0.8868945174024204160568774,0.9014606353158523413192327,0.9150714231208980742058845,0.9277124567223086909646905,0.9393703397527552169318574,0.9500327177844376357560989,0.9596882914487425393000680,0.9683268284632642121736594,0.9759391745851364664526010,0.9825172635630146774470458,0.9880541263296237994807628,0.9925439003237626245718923,0.9959818429872092906503991,0.9983643758631816777241494,0.9996895038832307668276901]
+# w96 = [0.0325506144923631662419614,0.0325161187138688359872055,0.0324471637140642693640128,0.0323438225685759284287748,0.0322062047940302506686671,0.0320344562319926632181390,0.0318287588944110065347537,0.0315893307707271685580207,0.0313164255968613558127843,0.0310103325863138374232498,0.0306713761236691490142288,0.0302999154208275937940888,0.0298963441363283859843881,0.0294610899581679059704363,0.0289946141505552365426788,0.0284974110650853856455995,0.0279700076168483344398186,0.0274129627260292428234211,0.0268268667255917621980567,0.0262123407356724139134580,0.0255700360053493614987972,0.0249006332224836102883822,0.0242048417923646912822673,0.0234833990859262198422359,0.0227370696583293740013478,0.0219666444387443491947564,0.0211729398921912989876739,0.0203567971543333245952452,0.0195190811401450224100852,0.0186606796274114673851568,0.0177825023160452608376142,0.0168854798642451724504775,0.0159705629025622913806165,0.0150387210269949380058763,0.0140909417723148609158616,0.0131282295669615726370637,0.0121516046710883196351814,0.0111621020998384985912133,0.0101607705350084157575876,0.0091486712307833866325846,0.0081268769256987592173824,0.0070964707911538652691442,0.0060585455042359616833167,0.0050142027429275176924702,0.0039645543384446866737334,0.0029107318179349464084106,0.0018539607889469217323359,0.0007967920655520124294381]
+
+# 128 nodes
+x128 = [0.0122236989606157641980521,0.0366637909687334933302153,0.0610819696041395681037870,0.0854636405045154986364980,0.1097942311276437466729747,0.1340591994611877851175753,0.1582440427142249339974755,0.1823343059853371824103826,0.2063155909020792171540580,0.2301735642266599864109866,0.2538939664226943208556180,0.2774626201779044028062316,0.3008654388776772026671541,0.3240884350244133751832523,0.3471177285976355084261628,0.3699395553498590266165917,0.3925402750332674427356482,0.4149063795522750154922739,0.4370245010371041629370429,0.4588814198335521954490891,0.4804640724041720258582757,0.5017595591361444642896063,0.5227551520511754784539479,0.5434383024128103634441936,0.5637966482266180839144308,0.5838180216287630895500389,0.6034904561585486242035732,0.6228021939105849107615396,0.6417416925623075571535249,0.6602976322726460521059468,0.6784589224477192593677557,0.6962147083695143323850866,0.7135543776835874133438599,0.7304675667419088064717369,0.7469441667970619811698824,0.7629743300440947227797691,0.7785484755064119668504941,0.7936572947621932902433329,0.8082917575079136601196422,0.8224431169556438424645942,0.8361029150609068471168753,0.8492629875779689691636001,0.8619154689395484605906323,0.8740527969580317986954180,0.8856677173453972174082924,0.8967532880491581843864474,0.9073028834017568139214859,0.9173101980809605370364836,0.9267692508789478433346245,0.9356743882779163757831268,0.9440202878302201821211114,0.9518019613412643862177963,0.9590147578536999280989185,0.9656543664319652686458290,0.9717168187471365809043384,0.9771984914639073871653744,0.9820961084357185360247656,0.9864067427245862088712355,0.9901278184917343833379303,0.9932571129002129353034372,0.9957927585349811868641612,0.9977332486255140198821574,0.9990774599773758950119878,0.9998248879471319144736081]
+w128 = [0.0244461801962625182113259,0.0244315690978500450548486,0.0244023556338495820932980,0.0243585572646906258532685,0.0243002001679718653234426,0.0242273192228152481200933,0.0241399579890192849977167,0.0240381686810240526375873,0.0239220121367034556724504,0.0237915577810034006387807,0.0236468835844476151436514,0.0234880760165359131530253,0.0233152299940627601224157,0.0231284488243870278792979,0.0229278441436868469204110,0.0227135358502364613097126,0.0224856520327449668718246,0.0222443288937997651046291,0.0219897106684604914341221,0.0217219495380520753752610,0.0214412055392084601371119,0.0211476464682213485370195,0.0208414477807511491135839,0.0205227924869600694322850,0.0201918710421300411806732,0.0198488812328308622199444,0.0194940280587066028230219,0.0191275236099509454865185,0.0187495869405447086509195,0.0183604439373313432212893,0.0179603271850086859401969,0.0175494758271177046487069,0.0171281354231113768306810,0.0166965578015892045890915,0.0162550009097851870516575,0.0158037286593993468589656,0.0153430107688651440859909,0.0148731226021473142523855,0.0143943450041668461768239,0.0139069641329519852442880,0.0134112712886163323144890,0.0129075627392673472204428,0.0123961395439509229688217,0.0118773073727402795758911,0.0113513763240804166932817,0.0108186607395030762476596,0.0102794790158321571332153,0.0097341534150068058635483,0.0091830098716608743344787,0.0086263777986167497049788,0.0080645898904860579729286,0.0074979819256347286876720,0.0069268925668988135634267,0.0063516631617071887872143,0.0057726375428656985893346,0.0051901618326763302050708,0.0046045842567029551182905,0.0040162549837386423131943,0.0034255260409102157743378,0.0028327514714579910952857,0.0022382884309626187436221,0.0016425030186690295387909,0.0010458126793403487793129,0.0004493809602920903763943]
 
 standard_normal = torch.distributions.Normal(torch.tensor([0]).to(device), torch.tensor([1]).to(device))
 
@@ -16,33 +23,38 @@ class HestonModel:
     def __init__(self):
         
         self.market = {
-            'K': None,
-            'T': None,
             'S0': None,
             'r': None,
             'asset_cross_correlation': None
         }
         
-        # Initial values from the paper [V0,theta,rho,kappa,sigma]
-        self.params = torch.tensor([[1.2], 
-                                    [0.2], 
-                                    [-0.3], 
-                                    [0.6], 
-                                    [0.2]], requires_grad=True).to(device)
+        self.params = {
+            'v0': None,
+            'theta': None,
+            'rho': None,
+            'kappa': None,
+            'sigma': None
+        }
         
         self.quad = {'u': None,
-                     'x': None}
+                     'w': None}
     
-    def pricing(self, parameters, market_data, u, w):
+    def pricing(self, K, T, params=None):
         
+        if params is not None:
+            if isinstance(params, dict):
+                v0 = params['v0']
+                theta = params['theta']
+                rho = params['rho']
+                kappa = params['kappa']
+                sigma = params['sigma']
+            else:
+                v0, theta, rho, kappa, sigma = params
+        else:
+            v0, theta, rho, kappa, sigma = self.params.values()
+        S0, r, _ = self.market.values()
+        u, w = self.quad.values()
         num_nodes = int(u.shape[0] / 2)
-        
-        V0, theta, rho, kappa, sigma = parameters
-        
-        K = market_data['K']
-        T = market_data['T']
-        S0 = market_data['S0']
-        r = market_data['r']
 
         # Required constants for the characteristic function
         xi = kappa - sigma * rho * u * 1j
@@ -50,88 +62,70 @@ class HestonModel:
         A1 = u * (u + 1j) * torch.sinh(d * T / 2)
         A2 = d * torch.cosh(d * T/ 2) + xi * torch.sinh(d * T/ 2)
         A = A1 / A2
-        D = torch.log(d) + (kappa - d) * T/ 2 - torch.log((d + xi) / 2 + (d - xi) * torch.exp(-d * T) / 2)
+        D = torch.log(d) + (kappa - d) * T / 2 - torch.log((d + xi) / 2 + (d - xi) * torch.exp(-d * T) / 2)
         
         # Characteristic function
-        char_func = torch.exp(1j * u * (torch.log(S0) + r * T) - T * kappa * theta  * rho * u * 1j / sigma - V0 * A + 2 * kappa * theta * D / sigma**2)
+        char_func = torch.exp(1j * u * (torch.log(S0) + r * T) - T * kappa * theta * rho * u * 1j / sigma - v0 * A + 2 * kappa * theta * D / sigma**2)
         
-        offset = 0.5 * (market_data['S0'] - torch.exp(-market_data['r'] * market_data['T']) * market_data['K'])
+        offset = 0.5 * (S0 - torch.exp(-r * T) * K)
         
         # Gauss-Legendre quadrature
         integrand = torch.real((K**(-u * 1j) / (u * 1j)) * char_func)
         integrand = integrand[:num_nodes,:] - K * integrand[num_nodes:,:]
         integrand = w.reshape(-1,1) * (integrand[:num_nodes//2,:] + integrand[num_nodes//2:,:])
         integrand = torch.sum(integrand, dim=0) * torch.exp(-r * T.reshape(-1,1)).reshape(1, -1) / np.pi
-    
+        
         return (offset + integrand).T
         
-    def jacobian(self, parameters, market_data, u, w):
+    def jacobian(self, K, T, params=None):
         
+        if params is not None:
+            if isinstance(params, dict):
+                v0 = params['v0']
+                theta = params['theta']
+                rho = params['rho']
+                kappa = params['kappa']
+                sigma = params['sigma']
+            else:
+                v0, theta, rho, kappa, sigma = params
+        else:
+            v0, theta, rho, kappa, sigma = self.params.values()
+        S0, r, _ = self.market.values()
+        u, w = self.quad.values()
         num_nodes = int(u.shape[0] / 2)
-        
-        V0, theta, rho, kappa, sigma = parameters
-        V0.retain_grad()
-        theta.retain_grad()
-        rho.retain_grad()
-        kappa.retain_grad()
-        sigma.retain_grad()
-        
-        K = market_data['K']
-        T = market_data['T']
-        S0 = market_data['S0']
-        r = market_data['r']
 
         # Required constants for the characteristic function
         xi = kappa - sigma * rho * u * 1j
         d = torch.sqrt(xi**2 + sigma**2 * u * (u + 1j))
-        A1 = u * (u + 1j) * torch.sinh(d * T / 2)
-        A2 = d * torch.cosh(d * T / 2) + xi * torch.sinh(d * T / 2)
+        cosh = torch.cosh(d * T / 2)
+        sinh = torch.sinh(d * T / 2)
+        A1 = u * (u + 1j) * sinh
+        A2 = d * cosh + xi * sinh
         A = A1 / A2
-        D = torch.log(d) + (kappa - d) * T/ 2 - torch.log((d + xi) / 2 + (d - xi) * torch.exp(-d * T) / 2)
+        D = torch.log(d) + (kappa - d) * T / 2 - torch.log((d + xi) / 2 + (d - xi) * torch.exp(-d * T) / 2)
         B = torch.exp(D)
         
         # Characteristic function
-        char_func = torch.exp(1j * u * (torch.log(S0) + r * T) - T * kappa * theta  * rho * u * 1j / sigma - V0 * A + 2 * kappa * theta * D / sigma**2)
+        char_func = torch.exp(1j * u * (torch.log(S0) + r * T) - T * kappa * theta * rho * u * 1j / sigma - v0 * A + 2 * kappa * theta * D / sigma**2)
         
-        # Because why is there no easy way to do this...
-        def d_func(rho, sigma):
-            xi = kappa - sigma * rho * u * 1j
-            return torch.sqrt(xi**2 + sigma**2 * u * (u + 1j))
-        d_partial_real = F.jacrev(lambda x,y: d_func(x,y).real, (0,1))(rho, sigma)
-        d_partial_imag = F.jacrev(lambda x,y: d_func(x,y).imag, (0,1))(rho, sigma)
-        dd_drho = (d_partial_real[0] + 1j * d_partial_imag[0]).squeeze(-1)
-        dd_dsigma = (d_partial_real[1] + 1j * d_partial_imag[1]).squeeze(-1)
+        # Analytical gradient components
+        dd_drho = -xi * sigma * u * 1j / d
+        dA2_drho = -sigma * (2 + T * xi) * u * 1j / 2 / d * (xi * cosh + d * sinh)
+        dB_drho = torch.exp(kappa * T / 2) * (dd_drho - d * dA2_drho / A2) / A2
+        dA1_drho = -1j * u**2 * (u + 1j) * T * xi * sigma * cosh / 2 / d
+        dA_drho = (dA1_drho - A * dA2_drho) / A2
+        dB_dkappa = 1j * dB_drho / sigma / u + T * B / 2
+        dd_dsigma = (rho / sigma - 1 / xi) * dd_drho + sigma * u**2 / d
+        dA1_dsigma = u * (u + 1j) * T * dd_dsigma * cosh / 2
+        dA2_dsigma = rho * dA2_drho / sigma - (2 + T * xi) * dA1_drho / (1j * u * T * xi) + sigma * T * A1 / 2
+        dA_dsigma = (dA1_dsigma - A * dA2_dsigma) / A2
         
-        def A2_func(rho, sigma):
-            d = d_func(rho, sigma)
-            return d * torch.cosh(d * T / 2) + xi * torch.sinh(d * T / 2)
-        A2_partial_real = F.jacrev(lambda x,y: A2_func(x,y).real, (0,1))(rho, sigma)
-        A2_partial_imag = F.jacrev(lambda x,y: A2_func(x,y).imag, (0,1))(rho, sigma)
-        dA2_drho = (A2_partial_real[0] + 1j * A2_partial_imag[0]).squeeze(-1)
-        dA2_dsigma = (A2_partial_real[1] + 1j * A2_partial_imag[1]).squeeze(-1)
-        
-        def A_func(rho, sigma):
-            A2 = A2_func(rho, sigma)
-            return A1 / A2
-        A_partial_real = F.jacrev(lambda x,y: A_func(x,y).real, (0,1))(rho, sigma)
-        A_partial_imag = F.jacrev(lambda x,y: A_func(x,y).imag, (0,1))(rho, sigma)
-        dA_drho = (A_partial_real[0] + 1j * A_partial_imag[0]).squeeze(-1)
-        dA_dsigma = (A_partial_real[1] + 1j * A_partial_imag[1]).squeeze(-1)
-            
-        def B_func(kappa):
-            xi = kappa - sigma * rho * u * 1j
-            d = torch.sqrt(xi**2 + sigma**2 * u * (u + 1j))
-            return torch.exp(torch.log(d) + (kappa - d) * T/ 2 - torch.log((d + xi) / 2 + (d - xi) * torch.exp(-d * T) / 2))
-        B_partial_real = F.jacrev(lambda x: B_func(x).real)(kappa)
-        B_partial_imag = F.jacrev(lambda x: B_func(x).imag)(kappa)
-        dB_dkappa =(B_partial_real + 1j * B_partial_imag).squeeze(-1)
-        
-        # Gradient vector of the characteristic function wrt [V0,theta,rho,kappa,sigma]
+        # Gradient vector of the characteristic function wrt [v0,theta,rho,kappa,sigma]
         h1 = -A
         h2 = 2 * kappa * D / sigma**2 - T * kappa * rho * u * 1j / sigma
-        h3 = -V0 * dA_drho + 2 * kappa * theta * (dd_drho - d * dA2_drho / A2) / sigma**2 / d - T * kappa * theta * u * 1j / sigma
-        h4 = V0 * dA_drho / sigma / u / 1j + 2 * theta * D / sigma**2 + 2 * kappa * theta * dB_dkappa / sigma**2 / B - T * theta * rho * u * 1j / sigma
-        h5 = -V0 * dA_dsigma - 4 * kappa * theta * D / sigma**3 + 2 * kappa * theta * (dd_dsigma - d * dA2_dsigma / A2) / sigma**2 / d + T * kappa * theta * rho * u * 1j / sigma**2
+        h3 = -v0 * dA_drho + 2 * kappa * theta * (dd_drho - d * dA2_drho / A2) / sigma**2 / d - T * kappa * theta * u * 1j / sigma
+        h4 = v0 * dA_drho / sigma / u / 1j + 2 * theta * D / sigma**2 + 2 * kappa * theta * dB_dkappa / sigma**2 / B - T * theta * rho * u * 1j / sigma
+        h5 = -v0 * dA_dsigma - 4 * kappa * theta * D / sigma**3 + 2 * kappa * theta * (dd_dsigma - d * dA2_dsigma / A2) / sigma**2 / d + T * kappa * theta * rho * u * 1j / sigma**2
         grad_vec = torch.stack([h1, h2, h3, h4, h5], dim=2)
         
         # Gauss-Legendre quadrature
@@ -142,42 +136,37 @@ class HestonModel:
         
         return integrand
     
-    def calibrate(self, K, T, S0, r):
+    def set_market(self, S0, r, x, w):
+        
+        self.market['S0'] = torch.tensor([S0], dtype=torch.float64).to(device)
+        # Assumes no dividend. If there is, subtract from r for that asset. Since r is a scalar, it will have to be transformed into a tensor of the correct shape
+        self.market['r'] = torch.tensor([r], dtype=torch.float64).to(device)
+        
+        if x is not None and w is not None: 
+            u = torch.tensor(x, dtype=torch.float64).to(device).reshape(-1,1)
+            w = torch.tensor(w, dtype=torch.float64).to(device).reshape(-1,1)
+         
+            # From the paper, their code uses 200 as an upper bound with 64 nodes
+            u_max = 200
+            u = torch.cat((u,-u), dim=0)
+            u = 0.5 * u_max * (u + 1) # Rescaling to quadrature domain
+            u = torch.cat((u-1j,u), dim=0)
+            w = 0.5 * u_max * w
+            
+            self.quad['u'] = u
+            self.quad['w'] = w
+    
+    def calibrate(self, K, T, price):
         
         # Training method is based on the Levenberg-Marquardt method, but with the Jacobian calculated analytically
         # Paper is found at https://arxiv.org/pdf/1511.08718
         
-        # K and T are lists of strike prices and corresponding times to maturity
-        self.market['K'] = torch.tensor(K).to(device).reshape(1,-1)
-        self.market['T'] = torch.tensor(T).to(device).reshape(1,-1)
-        self.market['S0'] = torch.tensor([S0]).to(device)
-        # Assumes no dividend. If there is, subtract from r for that asset. Since r is a scalar, it will have to be transformed into a tensor of the correct shape
-        self.market['r'] = torch.tensor([r]).to(device)
+        # Dataset
+        K = torch.tensor(K).to(device).reshape(1,-1)
+        T = torch.tensor(T).to(device).reshape(1,-1)
+        price = torch.tensor(price).to(device).reshape(-1,1)
         
-        u = torch.tensor(x64).to(device).reshape(-1,1)
-        w = torch.tensor(w64).to(device).reshape(-1,1)
-        
-        # From the paper, their code uses 200 as an upper bound with 64 nodes
-        u_max = 200
-        u = torch.cat((u,-u), dim=0)
-        u = 0.5 * u_max * (u + 1) # Rescaling to quadrature domain
-        u = torch.cat((u-1j,u), dim=0)
-        
-        w = 0.5 * u_max * w
-        
-        self.quad['u'] = u
-        self.quad['w'] = w
-        
-        # The paper used a tolerance of 1e-10. Default is 1e-8 which should be good enough
-        # They also used an initial damping factor equal to time to maturity
-        # Therefore I decided to use default. All other parameters as well
-        # In particular, max_iter is 100, where in the paper the results are pretty good after less than 20
-        return self.lsq_lma(self.params,
-                       self.pricing,
-                       self.jacobian,
-                       (self.market, u ,w),
-                       tau=max(T))
-        # This supposedly returns a list containing the parameters at each iteration
+        return self.levmarq(K, T, price)
 
     def single_asset_path(self, u, dt, psic=1.5, gamma1=0.5, gamma2=0.5):
         
@@ -191,22 +180,18 @@ class HestonModel:
         assert u.shape[2] == 2
         
         numsteps = u.shape[1]
-        
-        V0 = self.params[0]
-        theta = self.params[1]
-        rho = self.params[2]
-        kappa = self.params[3]
-        sigma = self.params[4]
+        v0, theta, rho, kappa, sigma = self.params.values()
         
         S0 = self.market['S0']
         r = self.market['r']
+        u = u.to(torch.float64)
         L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
         u = (L @ u.reshape(-1,2,1)).reshape(-1, numsteps, 2)
         uniform = torch.rand(u.shape)
         
         path = torch.empty((u.shape[0], numsteps + 1, 2), device=device)
         path[:,0,0] = torch.log(S0)
-        path[:,0,1] = V0
+        path[:,0,1] = v0
         
         v1 = sigma**2 * torch.exp(-kappa * dt) * (1 - torch.exp(-kappa * dt)) / kappa
         v2 = theta * sigma**2 * (1 - torch.exp(-kappa * dt))**2 / 2 / kappa
@@ -264,12 +249,7 @@ class HestonModel:
         # corresponding volatility, which has correlation rho
         
         numsteps = u.shape[2]
-        
-        V0 = self.params[0]
-        theta = self.params[1]
-        rho = self.params[2]
-        kappa = self.params[3]
-        sigma = self.params[4]
+        v0, theta, rho, kappa, sigma = self.params.values()
         
         S0 = self.market['S0']
         r = self.market['r']
@@ -292,6 +272,7 @@ class HestonModel:
         Q_inv = torch.block_diag(*Q_inv)
         # This worked experimentally, don't ask me
         num_paths, num_assets, num_timesteps, _ = u.shape
+        u = u.to(torch.float64)
         u = Q_inv @ R @ u.transpose(2,3).flatten(1,2)
         L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
         u = (L @ u.reshape(-1,2,1)).reshape(-1, n, numsteps, 2)
@@ -300,7 +281,7 @@ class HestonModel:
         
         path = torch.empty((u.shape[0], n, u.shape[2]+1, 2), device=device)
         path[:,:,0,0] = torch.log(S0)
-        path[:,:,0,1] = V0
+        path[:,:,0,1] = v0
         
         v1 = sigma**2 * torch.exp(-kappa * dt) * (1 - torch.exp(-kappa * dt)) / kappa
         v2 = theta * sigma**2 * (1 - torch.exp(-kappa * dt))**2 / 2 / kappa
@@ -343,89 +324,71 @@ class HestonModel:
         
         return path
 
-    def lsq_lma(self,
-            p: torch.Tensor,
-            function, 
-            jac_function, 
-            args, 
-            ftol: float = 1e-8,
-            ptol: float = 1e-8,
-            gtol: float = 1e-8,
-            tau: float = 1e-3,
-            meth: str = 'lev',
-            rho1: float = .25, 
-            rho2: float = .75, 
-            bet: float = 2,
-            gam: float = 3,
-            max_iter: int = 100,
-        ):
-        """
-        Levenberg-Marquardt implementation for least-squares fitting of non-linear functions
+    def levmarq(self, K, T, price, max_iter=1000):
         
-        :param p: initial value(s)
-        :param function: user-provided function which takes p (and additional arguments) as input
-        :param jac_fun: user-provided Jacobian function which takes p (and additional arguments) as input
-        :param args: optional arguments passed to function
-        :param ftol: relative change in cost function as stop condition
-        :param ptol: relative change in independant variables as stop condition
-        :param gtol: maximum gradient tolerance as stop condition
-        :param tau: factor to initialize damping parameter
-        :param meth: method which is default 'lev' for Levenberg and otherwise Marquardt
-        :param rho1: first gain factor threshold for damping parameter adjustment for Marquardt
-        :param rho2: second gain factor threshold for damping parameter adjustment for Marquardt
-        :param bet: multiplier for damping parameter adjustment for Marquardt
-        :param gam: divisor for damping parameter adjustment for Marquardt
-        :param max_iter: maximum number of iterations
-        :return: list of results
-        """
+        v0 = torch.tensor([0.2], dtype=torch.float64).to(device)
+        theta = torch.tensor([0.2], dtype=torch.float64).to(device)
+        rho = torch.tensor([-0.6], dtype=torch.float64).to(device)
+        kappa = torch.tensor([1.2], dtype=torch.float64).to(device)
+        sigma = torch.tensor([0.3], dtype=torch.float64).to(device)
+        params = torch.stack((v0, theta, rho, kappa, sigma), dim=0)
         
-        # Ripped this off the torchimize pack because I couldn't get it to work
-
-        fun = lambda p: function(p, *args)
-        jac_fun = lambda p: jac_function(p, *args)
-        
-        f = fun(p)
-        j = jac_fun(p)
-        g = torch.matmul(j.T, f)
-        H = torch.matmul(j.T, j)
-        u = tau * torch.max(torch.diag(H))
+        fun = lambda p: self.pricing(K, T, p) - price
+        r = fun(params)
+        r_norm = 0.5 * r.T @ r
+        j = self.jacobian(K, T, params)
+        hess = j.T @ j
+        mu = torch.max(T) * torch.max(torch.diag(hess))
         v = 2
-        p_list = [p]
-        while len(p_list) < max_iter:
-            D = torch.eye(j.shape[1], device=j.device)
-            D *= 1 if meth == 'lev' else torch.max(torch.maximum(H.diagonal(), D.diagonal()))
-            try:
-                h = -torch.linalg.lstsq(H+u*D, g, rcond=None, driver=None)[0]
-            except:
-                print("Error encountered")
-                return p_list
-            f_h = fun(p+h)
-            rho_denom = torch.matmul(h.T, u*h-g)
-            rho_nom = torch.matmul(f.T, f) - torch.matmul(f_h.T, f_h)
-            rho = rho_nom / rho_denom if rho_denom > 0 else torch.inf if rho_nom > 0 else -torch.inf
-            if rho > 0:
-                p = p + h
-                j = jac_fun(p)
-                g = torch.matmul(j.T, fun(p))
-                H = torch.matmul(j.T, j)
-            p_list.append(p.clone())
-            f_prev = f.clone()
-            f = fun(p)
-            if meth == 'lev':
-                u, v = (u*torch.max(torch.tensor([1/3, 1-(2*rho-1)**3])), 2) if rho > 0 else (u*v, v*2)
+        differential = j.T @ r
+        D = torch.eye(j.shape[1]).to(device)
+        count = 0
+        
+        for _ in range(max_iter):
+            
+            h = -torch.linalg.lstsq(hess + mu * D, differential)[0]
+            r_h = fun(params + h)
+            r_h_norm = 0.5 * r_h.T @ r_h
+            dL = h.T @ (mu * h - differential)
+            dF = r_norm - r_h_norm
+            
+            if dL > 0 and dF > 0:
+                params = params + h
+                j = self.jacobian(K, T, params)
+                differential = j.T @ r_h
+                hess = j.T @ j
+                v = v / 2
+                mu = mu / v
+                count += 1
             else:
-                u = u*bet if rho < rho1 else u/gam if rho > rho2 else u
-
-            # stop conditions
-            gcon = max(abs(g)) < gtol
-            pcon = (h**2).sum()**.5 < ptol*(ptol + (p**2).sum()**.5)
-            fcon = ((f_prev-f)**2).sum() < ((ftol*f)**2).sum() if rho > 0 else False
-            if gcon or pcon or fcon:
+                mu = mu * v
+                v = 2 * v
+            
+            if torch.norm(r - r_h) / torch.norm(r_h) < 1e-10 \
+                or torch.max(torch.abs(differential)) < 1e-10 \
+                or torch.norm(h) / torch.norm(params - h) < 1e-10:
                 break
-
-        return p_list       
-
+        
+        self.params['v0'] = params[0]
+        self.params['theta'] = params[1]
+        self.params['rho'] = params[2]
+        self.params['kappa'] = params[3]
+        self.params['sigma'] = params[4]
+        
+        return params, count
+    
 def calibration_test():
+    
+    model = HestonModel()
+    
+    # True values
+    true_params = {
+        'v0': torch.tensor([0.08]).to(device),
+        'theta': torch.tensor([0.1]).to(device),
+        'rho': torch.tensor([-0.8]).to(device),
+        'kappa': torch.tensor([3]).to(device),
+        'sigma': torch.tensor([0.25]).to(device)
+    }
     
     karr = [0.9371, 0.8603, 0.8112, 0.7760, 0.7470, 0.7216, 0.6699, 0.6137,
             0.9956, 0.9868, 0.9728, 0.9588, 0.9464, 0.9358, 0.9175, 0.9025,
@@ -441,11 +404,21 @@ def calibration_test():
 
     S0 = 1.0
     r = 0.02
+    K = torch.tensor(karr, dtype=torch.float64).to(device).reshape(1,-1)
+    T = torch.tensor(tarr, dtype=torch.float64).to(device).reshape(1,-1)
+    
+    model.set_market(S0, r, x128, w128)
+    true_price = model.pricing(K, T, true_params)
+    
+    result, count = model.calibrate(karr, tarr, true_price.tolist())
+    print('Initial values: [0.2, 0.2, -0.6, 1.2, 0.3]')
+    print('Found values:', result.flatten())
+    print('Correct values: [0.08, 0.1, -0.8, 3, 0.25]')
+    print('Number of iterations:', count)
+    
+    return result
 
-    model = HestonModel()
-    print(model.calibrate(karr, tarr, S0, r))
-
-def single_simulation_test(S0, r):
+def single_simulation_test(S0, r, params):
     
     numsteps = 10000
     
@@ -457,6 +430,14 @@ def single_simulation_test(S0, r):
     model = HestonModel()
     model.market['S0'] = torch.tensor([S0], device=device)
     model.market['r'] = torch.tensor([r], device=device)
+    
+    model.params = {
+        'v0': params[0],
+        'theta': params[1],
+        'rho': params[2],
+        'kappa': params[3],
+        'sigma': params[4]
+    }
     
     simulation = model.single_asset_path(paths, 1/365)
     
@@ -477,7 +458,7 @@ def single_simulation_test(S0, r):
     
     return simulation
     
-def multi_simulation_test(S0, r, asset_cross_covariance, n):
+def multi_simulation_test(S0, r, asset_cross_covariance, n, params):
     
     numsteps = 1000
     
@@ -490,6 +471,14 @@ def multi_simulation_test(S0, r, asset_cross_covariance, n):
     model.market['S0'] = torch.tensor([S0], device=device)
     model.market['r'] = torch.tensor([r], device=device)
     model.market['asset_cross_correlation'] = torch.tensor([asset_cross_covariance], device=device)
+    
+    model.params = {
+        'v0': params[0],
+        'theta': params[1],
+        'rho': params[2],
+        'kappa': params[3],
+        'sigma': params[4]
+    }
     
     simulation = model.multi_asset_path(paths, 1 / 365, n=n)
     
@@ -518,9 +507,8 @@ if __name__ == "__main__":
     
     import matplotlib.pyplot as plt
     import numpy as np
-
-    calibration_test()
-    single_simulation_test(1.0, 0.02)
-    multi_simulation_test(1.0, 0.02, 0.2, 3)
-        
+    
+    params = calibration_test()
+    single_simulation_test(1.0, 0.02, params)
+    multi_simulation_test(1.0, 0.02, 0.2, 3, params)
     
