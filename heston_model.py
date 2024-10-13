@@ -27,7 +27,6 @@ class HestonModel:
     def __init__(self):
         
         self.market = {
-            'S0': None,
             'r': None,
             'asset_cross_correlation': None
         }
@@ -53,7 +52,7 @@ class HestonModel:
         self.quad = {'u': u,
                      'w': w}
     
-    def pricing(self, K, T, params=None):
+    def pricing(self, K, T, S0, params=None):
         
         if params is not None:
             if isinstance(params, dict):
@@ -66,7 +65,7 @@ class HestonModel:
                 v0, theta, rho, kappa, sigma = params
         else:
             v0, theta, rho, kappa, sigma = self.params.values()
-        S0, r, _ = self.market.values()
+        r, _ = self.market.values()
         u, w = self.quad.values()
         num_nodes = int(u.shape[0] / 2)
 
@@ -91,7 +90,7 @@ class HestonModel:
         
         return (offset + integrand).T
         
-    def jacobian(self, K, T, params=None):
+    def jacobian(self, K, T, S0, params=None):
         
         if params is not None:
             if isinstance(params, dict):
@@ -104,7 +103,7 @@ class HestonModel:
                 v0, theta, rho, kappa, sigma = params
         else:
             v0, theta, rho, kappa, sigma = self.params.values()
-        S0, r, _ = self.market.values()
+        r, _ = self.market.values()
         u, w = self.quad.values()
         num_nodes = int(u.shape[0] / 2)
 
@@ -157,7 +156,7 @@ class HestonModel:
         self.market['r'] = torch.tensor(market['r'], dtype=torch.float64).to(device)
         self.market['asset_cross_correlation'] = torch.tensor(market['asset_cross_correlation'], dtype=torch.float64).to(device)
         
-    def calibrate(self, K, T, price):
+    def calibrate(self, K, T, S0, price):
         
         # Training method is based on the Levenberg-Marquardt method, but with the Jacobian calculated analytically
         # Paper is found at https://arxiv.org/pdf/1511.08718
@@ -165,11 +164,12 @@ class HestonModel:
         # Dataset
         K = torch.tensor(K).to(device).reshape(1,-1)
         T = torch.tensor(T).to(device).reshape(1,-1)
+        S0 = torch.tensor(S0)
         price = torch.tensor(price).to(device).reshape(-1,1)
         
-        return self.levmarq(K, T, price)
+        return self.levmarq(K, T, S0, price)
 
-    def single_asset_path(self, u, dt, psic=1.5, gamma1=0.5, gamma2=0.5, verbose=False):
+    def single_asset_path(self, u, uni, dt, psic=1.5, gamma1=0.5, gamma2=0.5, verbose=False):
         
         # Brownian motion is generated separately and fed into the Heston model
         # This section is dedicated to path simulation by the quadratic exponential scheme
@@ -179,6 +179,7 @@ class HestonModel:
         # u is an array of normally drawn values in the form (path #, timestep #, stock/vol)
         assert 1 <= psic and psic <= 2
         assert u.shape[2] == 2
+        assert u.shape == uni.shape
         
         numsteps = u.shape[1]
         v0, theta, rho, kappa, sigma = self.params.values()
@@ -188,7 +189,6 @@ class HestonModel:
         u = u.to(torch.float64)
         L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
         u = (L @ u.reshape(-1,2,1)).reshape(-1, numsteps, 2)
-        uniform = torch.rand(u.shape)
         
         path = torch.empty((u.shape[0], numsteps + 1, 2), device=device)
         path[:,0,0] = torch.log(S0[0])
@@ -202,11 +202,12 @@ class HestonModel:
         # gamma values are somewhat arbitrary, but it is based on approximating the volatility integrated over the timestep
         # using a convex combination of V(t) and V(t+dt). The standard Euler simulation uses gamma1=1, gamma2=0, we use 0.5
         # for a more central approximation. The more sophisticated approach is by matching moments.
-        x0 = r * dt - rho * kappa * theta * dt / sigma
         x1 = gamma1 * dt * (kappa * rho / sigma - 0.5) - rho / sigma
         x2 = gamma2 * dt * (kappa * rho / sigma - 0.5) + rho / sigma
         x3 = gamma1 * dt * (1 - rho**2)
         x4 = gamma2 * dt * (1 - rho**2)
+        
+        A = x2 + 0.5 * x4
         
         with tqdm(total=u.shape[1], desc="Simulation Progress", disable = not verbose) as pbar:
             for i in range(numsteps):
@@ -224,11 +225,15 @@ class HestonModel:
             
                 path[:,i+1,1] = torch.where(psi <= psic, \
                                             a * (torch.sqrt(b2) + u[:,i,1])**2, \
-                                            torch.where(uniform[:,i,1] <= p, \
+                                            torch.where(uni[:,i,1] <= p, \
                                                         0, \
-                                                        torch.log((1 - p) / (1 - uniform[:,i,1])) / beta))
+                                                        torch.log((1 - p) / (1 - uni[:,i,1])) / beta))
                 
                 # log stock price update
+                x0 = torch.where(psi <= psic,
+                                 -A * b2 * a / (1 - 2 * A * a) + 0.5 * torch.log(1 - 2 * A *a),
+                                 -torch.log(p + beta * (1 - p) / (beta - A))) - (x1 + 0.5 * x3) * path[:,i,1] + r * dt
+                
                 path[:,i+1,0] = path[:,i,0] + x0 + x1 * path[:,i,1] + x2 * path[:,i+1,1] + torch.sqrt(x3 * path[:,i,1] + x4 * path[:,i+1,1]) * u[:,i,0]
                 pbar.update()
                 
@@ -236,7 +241,7 @@ class HestonModel:
             
         return path
     
-    def multi_asset_path(self, u, dt, psic=1.5, gamma1=0.5, gamma2=0.5, n=3, verbose=False):
+    def multi_asset_path(self, u, uni, dt, psic=1.5, gamma1=0.5, gamma2=0.5, n=3, verbose=False):
         
         # In this section we generalise the single asset path to multiple assets
         # This is based on the paper https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2729475
@@ -260,7 +265,7 @@ class HestonModel:
         assert 1 <= psic and psic <= 2
         assert u.shape[1] == n
         assert u.shape[3] == 2
-        uniform = torch.rand(u.shape)
+        assert u.shape == uni.shape
         
         # Correlation matrix
         offdiag = torch.tensor([[ccc, rho*ccc], [rho*ccc, rho*rho*ccc]]) # This is based on the paper https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1435199
@@ -273,11 +278,10 @@ class HestonModel:
         Q_inv = torch.block_diag(*Q_inv)
         num_paths, num_assets, num_timesteps, _ = u.shape
         u = u.to(torch.float64)
-        u = Q_inv @ R @ u.transpose(2,3).flatten(1,2)
+        u = Q_inv @ R @ u.transpose(2,3).reshape(-1,6,1)
         L = torch.linalg.cholesky(torch.tensor([[1, rho], [rho, 1]]))
         u = (L @ u.reshape(-1,2,1)).reshape(-1, n, numsteps, 2)
         u = u.reshape(num_paths, num_assets, num_timesteps, 2)
-        uniform = torch.rand(u.shape)
         
         path = torch.empty((u.shape[0], n, u.shape[2]+1, 2), device=device)
         path[:,:,0,0] = torch.log(S0).reshape((1,-1))
@@ -291,11 +295,12 @@ class HestonModel:
         # gamma values are somewhat arbitrary, but it is based on approximating the volatility integrated over the timestep
         # using a convex combination of V(t) and V(t+dt). The standard Euler simulation uses gamma1=1, gamma2=0, we use 0.5
         # for a more central approximation. The more sophisticated approach is by matching moments.
-        x0 = r * dt - rho * kappa * theta * dt / sigma
         x1 = gamma1 * dt * (kappa * rho / sigma - 0.5) - rho / sigma
         x2 = gamma2 * dt * (kappa * rho / sigma - 0.5) + rho / sigma
         x3 = gamma1 * dt * (1 - rho**2)
         x4 = gamma2 * dt * (1 - rho**2)
+        
+        A = x2 + 0.5 * x4
         
         with tqdm(total=u.shape[2], desc="Simulation Progress", disable = not verbose) as pbar:
             for i in range(u.shape[2]):
@@ -313,18 +318,23 @@ class HestonModel:
             
                 path[:,:,i+1,1] = torch.where(psi <= psic, \
                                               a * (torch.sqrt(b2) + u[:,:,i,1])**2, \
-                                              torch.where(uniform[:,:,i,1] <= p, \
+                                              torch.where(uni[:,:,i,1] <= p, \
                                                           0, \
-                                                          torch.log((1 - p) / (1 - uniform[:,:,i,1])) / beta))
+                                                          torch.log((1 - p) / (1 - uni[:,:,i,1])) / beta))
                 
                 # log stock price update
+                x0 = torch.where(psi <= psic,
+                                 -A * b2 * a / (1 - 2 * A * a) + 0.5 * torch.log(1 - 2 * A *a),
+                                 -torch.log(p + beta * (1 - p) / (beta - A))) - (x1 + 0.5 * x3) * path[:,:,i,1] + r * dt
+                
                 path[:,:,i+1,0] = path[:,:,i,0] + x0 + x1 * path[:,:,i,1] + x2 * path[:,:,i+1,1] + torch.sqrt(x3 * path[:,:,i,1] + x4 * path[:,:,i+1,1]) * u[:,:,i,0]
+                                
                 pbar.update()
             pbar.close()
         
         return path
 
-    def levmarq(self, K, T, price, max_iter=1000):
+    def levmarq(self, K, T, S0, price, max_iter=1000):
         
         v0 = torch.tensor([0.2], dtype=torch.float64).to(device)
         theta = torch.tensor([0.2], dtype=torch.float64).to(device)
@@ -333,10 +343,10 @@ class HestonModel:
         sigma = torch.tensor([0.3], dtype=torch.float64).to(device)
         params = torch.stack((v0, theta, rho, kappa, sigma), dim=0)
         
-        fun = lambda p: self.pricing(K, T, p) - price
+        fun = lambda p: self.pricing(K, T, S0, p) - price
         r = fun(params)
         r_norm = 0.5 * r.T @ r
-        j = self.jacobian(K, T, params)
+        j = self.jacobian(K, T, S0, params)
         hess = j.T @ j
         mu = torch.max(T) * torch.max(torch.diag(hess))
         v = 2
@@ -354,7 +364,7 @@ class HestonModel:
             
             if dL > 0 and dF > 0:
                 params = params + h
-                j = self.jacobian(K, T, params)
+                j = self.jacobian(K, T, S0, params)
                 differential = j.T @ r_h
                 hess = j.T @ j
                 v = v / 2
@@ -404,12 +414,10 @@ def calibration_test(S0, r):
 
     K = torch.tensor(karr, dtype=torch.float64).to(device).reshape(1,-1)
     T = torch.tensor(tarr, dtype=torch.float64).to(device).reshape(1,-1)
-    
-    model.market['S0'] = torch.tensor([S0], dtype=torch.float64).to(device)
     model.market['r'] = torch.tensor([r], dtype=torch.float64).to(device)
-    true_price = model.pricing(K, T, true_params)
+    true_price = model.pricing(K, T, S0, true_params)
     
-    result, count = model.calibrate(karr, tarr, true_price.tolist())
+    result, count = model.calibrate(karr, tarr, S0, true_price.tolist())
     print('Initial values: [0.2, 0.2, -0.6, 1.2, 0.3]')
     print('Found values:', result.flatten())
     print('Correct values: [0.08, 0.1, -0.8, 3, 0.25]')
@@ -424,6 +432,7 @@ def single_simulation_test(S0, r, params):
     sobol_engine = torch.quasirandom.SobolEngine(2 * numsteps, True)
     paths = sobol_engine.draw(20)
     paths = paths.reshape(-1, numsteps, 2)
+    uniform = paths
     paths = standard_normal.icdf(paths)
     
     model = HestonModel()
@@ -438,7 +447,7 @@ def single_simulation_test(S0, r, params):
         'sigma': params[4]
     }
     
-    simulation = model.single_asset_path(paths, 1/365, verbose=True)
+    simulation = model.single_asset_path(paths, uniform, 1/365, verbose=True)
     
     plt.plot(simulation[:,:,0].T.detach().numpy())
     plt.title("Log price")
@@ -467,6 +476,7 @@ def multi_simulation_test(S0, r, asset_cross_covariance, n, a, params):
         paths = paths.reshape(-1, n, numsteps, 2)
     else:
         paths = torch.rand((a, n, numsteps, 2))
+    uniform = paths
     paths = standard_normal.icdf(paths)
     
     model = HestonModel()
@@ -482,7 +492,7 @@ def multi_simulation_test(S0, r, asset_cross_covariance, n, a, params):
         'sigma': params[4]
     }
     
-    simulation = model.multi_asset_path(paths, 1 / 365, n=n, verbose=True)
+    simulation = model.multi_asset_path(paths, uniform, 1 / 365, n=n, verbose=True)
     
     for i in range(n):
         plt.plot(simulation[:,i,:,0].T.detach().numpy())
