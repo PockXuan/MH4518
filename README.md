@@ -38,3 +38,7 @@ pip install -r requirements.txt
 
 - Helper functions:
   - Parameter esimation from given dataframe: return $ \mu, {\sigma^2}, v$
+  - Update datasets by running
+    ```bash
+    python update_datasets.py
+    ```
