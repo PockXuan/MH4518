@@ -85,18 +85,18 @@ class LOFTlayer(nf.flows.Flow):
 
 class AIS():
     
-    def __init__(self):
+    def __init__(self, num_timesteps, S0, r, LSLnetwork=None):
         
         # The model uses a modified Masked Affine Flow (MAF) layer that thresholds outputs to prevent
         # extremely high magnitudes. This allows it to be stable even at high dimensions and multiple
         # layers.
         
-        # Simulate weekly for 1 year, i.e. 6 * 52 dimensional input
+        # Simulate business daily for T timesteps
         
         self.device = device
-        self.T = 1
-        self.dt = 1 / 52
-        self.latent_size = 6 * 52 * self.T
+        self.T = num_timesteps
+        self.dt = 1 / 250
+        self.latent_size = 6 * self.T
         
         flows = []
         b = torch.zeros(self.latent_size)
@@ -109,89 +109,114 @@ class AIS():
             else:
                 flows += [ClippedMaskedAffineFlow(1 - b, t, s)]
             
-        self.AIS = nf.NormalizingFlow(nf.distributions.DiagGaussian(self.latent_size), flows).to(device) 
+        self.AIS = nf.NormalizingFlow(nf.distributions.DiagGaussian(self.latent_size), flows).to(device)
         
-        self.market = {
-            'S0_1': None,
-            'S0_2': None,
-            'S0_3': None,
-            'r': None
-        }
+        self.r = r
         
-        self.payoff = None
         self.AIS_optimizer = optim.Adam(self.AIS.parameters(), lr=1e-10, weight_decay=1e-5)
-        self.sobol_engine = None
         self.heston_model = HestonModel()
-        self.LSL = LSL(1, 0.04)
+        if LSLnetwork is not None:
+            self.LSL = LSLnetwork
+        else:
+            self.LSL = LSL(1, 0.04)
 
-    def train(self, num_paths=254, max_epochs=4000):
+    def train(self, params, corr, num_paths=254, max_epochs=4000):
         
-        # Simulate prices first
-        sobol_steps = int(6 * (21201 / 6))
-        sobol_engine = torch.quasirandom.SobolEngine(min(sobol_steps, self.latent_size), True)
-        num_steps = int(self.T // self.dt) + 1
-        losses = []
+        # We also implement control variates using the scheme detailed in Shyamsundar P, et al.; https://scipost.org/SciPostPhysCodeb.28/pdf
+        # For the control variate, we check if the barrier is hit and if a stock closes below initial value.
+        # Basically the same product minus callable and coupon. Coupon anyway will just be a constant difference
+        
+        sobol_engine = torch.quasirandom.SobolEngine(min(self.latent_size, 21201), True)
+        remaining_steps = max(self.latent_size-21201, 0)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.AIS_optimizer, 'min', 1.1**-1, 20)
+    
+        UHG_ratio = 2.0432
+        Pfizer_ratio = 27.2777
+        MC_ratio = 8.9847
+        
+        # Moving average approximation to control variate elements
+        payoff_mean = torch.inf 
+        control_mean = torch.inf 
+        cov = torch.inf
+        control_var = torch.inf
         with tqdm(total=max_epochs, desc="Training Progress") as pbar:
             for epoch in range(max_epochs):
                         
                 steps = sobol_engine.draw(num_paths).reshape((num_paths, 3, -1, 2))
-                if num_steps > sobol_steps:
-                    steps = torch.cat((steps, torch.rand(num_paths, 3, num_steps-sobol_steps, 2)), dim=2)
+                remaining = torch.randn((num_paths, 3, remaining_steps, 2))
+                steps = torch.cat((steps, remaining), dim=2)
                 steps = steps * (1 - 2 * 1e-6) + 1e-6
                 normal_steps = standard_normal.icdf(steps).reshape((-1, self.latent_size))
                 
-                # This method assumes h is positive but this idiot can actually lose money with the best outcome...
-                
-                # log_prob_latent = self.AIS.q0.log_prob(normal_steps)
-                # bm, log_det_jacobian = self.AIS.forward_and_log_det(normal_steps)
-                # log_prob_flow = self.AIS.q0.log_prob(bm)
-                # bm = bm.reshape(steps.shape)
-                # log_weights = log_prob_flow - log_prob_latent - log_det_jacobian
+                # Since payoff can be negative, we instead minimise log(payoff**2 f(x) / g(x)), which also minimises the variance,
+                # but the square term allows for a unique solution
                 
                 log_prob_latent = self.AIS.q0.log_prob(normal_steps)
                 log_prob_flow = self.AIS.log_prob(normal_steps)
                 log_weights = log_prob_latent - log_prob_flow
                 
-                normal_steps = normal_steps.reshape(num_paths, 3, num_steps, 2)
-                paths = self.heston_model.multi_asset_path(normal_steps, steps, self.dt)
-                payoff = self.LSL.evaluate_payoff(paths)
+                normal_steps = normal_steps.reshape(num_paths, 3, -1, 2)
+                paths = self.heston_model.multi_asset_path(normal_steps, steps, params, self.r, corr, dt=self.dt, verbose=False)
+                payoff = self.LSL.evaluate_payoff(paths, self.r)
+                sample_payoff_mean = torch.mean(payoff)
                 
-                loss = 2 * torch.log(torch.abs(payoff)) + log_weights
-                loss = torch.mean(loss**2)
-                losses.append(loss.detach().numpy())
+                final_worst_stock_idx = torch.min(paths[:,:,-1,0], dim=1)[1].reshape(-1,1) # This is already in log price
+                worst_payout = torch.where(final_worst_stock_idx == 0,
+                                           UHG_ratio,
+                                           torch.where(final_worst_stock_idx == 1,
+                                                       Pfizer_ratio,
+                                                       MC_ratio))**-1
+                breached = (paths[:,:,:,0] < np.log(0.59)).any(2).any(1).reshape(-1,1)
+                control = torch.where(breached,
+                                      worst_payout,
+                                      1)
+                sample_control_mean = torch.mean(control)
+                
+                if epoch == 0:                    
+                    payoff_mean = sample_payoff_mean
+                    control_mean = sample_control_mean
+                    
+                    sample_cov = torch.sum((control - control_mean) * (payoff - payoff_mean)) / (num_paths - 1)
+                    sample_control_var = torch.sum((control - control_mean)**2) / (num_paths - 1)
+                    
+                    cov = sample_cov
+                    control_var = sample_control_var
+                else:
+                    sample_cov = torch.sum((control - control_mean) * (payoff - payoff_mean)) / (num_paths - 1)
+                    sample_control_var = torch.sum((control - control_mean)**2) / (num_paths - 1)
+                
+                    payoff_mean = (2 * payoff_mean + sample_payoff_mean) / 3
+                    control_mean = (2 * control_mean + sample_control_mean) / 3
+                    cov = (2 * cov + sample_cov) / 3
+                    control_var = (2 * control_var + sample_control_var) / 3
+                    
+                c = -cov / control_var
+                cv = payoff + c * (control - control_mean)
+                
+                loss = 2 * torch.log(torch.abs(cv)) + log_weights
+                loss = torch.mean(loss) # This may be negative
                 
                 self.AIS_optimizer.zero_grad()
                 loss.backward()
                 self.AIS_optimizer.step()
                 
-                pbar.set_postfix({'Loss': loss.item()})
-                pbar.update(1)  
+                scheduler.step(loss)
                 
-        return losses
+                pbar.set_postfix({'Loss': loss.item()})
+                pbar.update(1)
+        
+        return c, control_mean
           
     
 if __name__ == "__main__":
-    model = AIS()
-    market = {
-                'S0': 1,
-                'r': 0.04,
-                'asset_cross_correlation': 0.2
-            }
-    # For testing
-    params = {
-        'v0': torch.tensor([0.08], dtype=torch.float64).to(device),
-        'theta': torch.tensor([0.1], dtype=torch.float64).to(device),
-        'rho': torch.tensor([-0.8], dtype=torch.float64).to(device),
-        'kappa': torch.tensor([3], dtype=torch.float64).to(device),
-        'sigma': torch.tensor([0.25], dtype=torch.float64).to(device)
-    }
-    model.heston_model.set_market(market)
-    model.heston_model.params = params
-
-    # Initial fixing at 23/08/23. Simulate weekly for 1 year
-    losses = model.train()
+    model = AIS(317, torch.tensor([20, 347, 2000]), 0.04)
+        
+    # [v0,theta,rho,kappa,sigma]
+    params = torch.tensor([[1.0],
+                            [0.0055],
+                            [-0.2940],
+                            [0.2],
+                            [1.0]], dtype=torch.float64).to(device).reshape(1,-1).tile(3,1)
+    
+    c, control_mean = model.train(params, torch.eye(6), max_epochs=10)
     torch.save(model.AIS.state_dict(), f"AIS.pth")
-
-    import matplotlib.pyplot as plt
-    plt.plot(losses)
-    plt.show()
