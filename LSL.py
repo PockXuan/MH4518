@@ -39,10 +39,10 @@ class LSL():
     
     # Stands for Longstaff-Schwartz Lookback
     
-    def __init__(self, time_elapsed, r):
+    def __init__(self, model, time_elapsed, r):
                 
         self.dt = 1/250
-        self.heston_model = HestonModel()
+        self.model = model
         self.current_date = time_elapsed
         self.calling_dates = list(filter(lambda x:x>0, [i - time_elapsed for i in [129, 189, 254]]))
         self.payoff_dates = list(filter(lambda x:x>0, [i - time_elapsed for i in [70, 132, 193, 257, 321]]))
@@ -95,10 +95,10 @@ class LSL():
                 batch_best_loss = torch.inf
                     
                 u = uni * (1 - 2 * 1e-6) + 1e-6
-                paths = self.heston_model.multi_asset_path(standard_normal.icdf(u), uni, params, r, corr, verbose=False)
+                paths = self.model.multi_asset_path(standard_normal.icdf(u), uni=uni, params=params, r=r, corr=corr, verbose=False)
                 
                 # Paths is in log price
-                breached = paths[:,:,:,0] <= np.log(0.59)
+                breached = paths[:,:,:,0] <= paths[:,:,0,0].unsqueeze(-1) + np.log(0.59)
                 final = paths[:,:,-1,:]
                 
                 # Discounted final redemption amount
@@ -148,8 +148,8 @@ class LSL():
                 
         payout = -torch.exp(-r * self.dt * torch.tensor(self.payoff_dates)) * 0.1025 / 4
         payout = torch.cumsum(payout, dim=0)
-        payout = torch.cat((payout[:-2], (payout[-2]+payout[-1]).reshape(1)))
-        
+        payout = torch.cat((payout[:-2], payout[-1].reshape(1)))
+
         if self.current_date < 129:
             payout = payout
         elif self.current_date < 189:
@@ -158,25 +158,24 @@ class LSL():
             payout = payout[2:]
         else:
             payout = payout[-1]
-                
+
         # Paths is in log price
-        breached = paths[:,:,:,0] <= np.log(0.59)
+        breached = paths[:,:,:,0] <= (paths[:,:,0,0].unsqueeze(-1) + np.log(0.59))
         final = paths[:,:,-1,:]
-        
+
         # Input to each model
         breached_at_call_date = torch.cummax(breached,2)[0][:,:,self.calling_dates].any(dim=1).unsqueeze(-1)
         stock_at_call_date = paths[:,:,self.calling_dates,:].transpose(1,2).flatten(-2,-1)
         unit_input = torch.cat((stock_at_call_date, breached_at_call_date), dim=2) # Index is (path #, unit #, inputs)
         
         # Discounted final redemption amount
-        discounted_final_redemption = torch.where(breached.any((1,2)),
-                                                    torch.where(final[:,0,0] < torch.minimum(final[:,1,0], final[:,2,0]),
-                                                                1 - 1/ UHG_ratio,
-                                                                torch.where(final[:,1,0] < final[:,2,0],
-                                                                            1 - 1 / Pfizer_ratio,
-                                                                            1 - 1 / MC_ratio)),
-                                                    0) * np.exp(-r * 317 * self.dt)
-        
+        worst_stock_idx = torch.min(final[:,:,0], dim=1)[1]
+        worst_payout = torch.where(worst_stock_idx==0,
+                                   1 / UHG_ratio * final[:,0,0],
+                                   torch.where(worst_stock_idx==1,
+                                               1 / Pfizer_ratio * final[:,1,0],
+                                               1 / MC_ratio * final[:,2,0]))
+        discounted_final_redemption = -worst_payout * np.exp(-r * 317 * self.dt)
         payoff = payout.reshape(1,-1).tile((paths.shape[0],1))
         payoff[:,-1] = payoff[:,-1] + discounted_final_redemption
         final_payoff = payoff[:,-1]
@@ -202,11 +201,12 @@ if __name__ == "__main__":
                             [5.0],
                             [0.30470]], dtype=torch.float64).to(device).reshape(1,-1).tile(3,1)
 
-    model.train(0.04, torch.eye(6), params, max_epochs=1)
+    model.train(0.04, torch.eye(6), params, max_epochs=10)
     # for i in range(len(model.LSarray)):
     #     torch.save(model.LSarray[i][0].state_dict(), os.getcwd() + f'/unit_{i+1}.pth')
     uni = torch.rand((1000, 3, 317, 2))
-    paths = model.heston_model.multi_asset_path(standard_normal.icdf(uni), uni, params, 0.04, torch.eye(6))
+    paths = model.model.multi_asset_path(standard_normal.icdf(uni), uni, params, 0.04, torch.eye(6))
+    print(paths.shape)
     print(model.evaluate_payoff(paths, 0.04))
             
         
