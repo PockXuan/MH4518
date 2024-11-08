@@ -1,73 +1,51 @@
-import pandas as pd
-import numpy as np
-import torch
-import numpy as np
 import os
-from scipy.stats import chi2, norm, t, multivariate_normal
+import numpy as np
+import pandas as pd
+import torch
+from scipy.stats import chi2, norm, multivariate_normal, qmc
 import scipy as sp
 from arch import arch_model
 
-# Define the reference date
-reference_date = pd.to_datetime("2023-08-23").date()
+# Set a reference date for processing
+REFERENCE_DATE = pd.to_datetime("2023-08-23").date()
 
-# Function to calculate Garman-Klass variance
-def preprocess(df):
-    # Ensure Date is in datetime format
+# Function to preprocess data and calculate Garman-Klass variance
+def preprocess_stock_data(df):
+    """Convert dates, calculate Garman-Klass variance, and take log of stock prices."""
     df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None).dt.date
-    # Calculate Garman-Klass variance for each row
-    # df['garman_klass_var'] = 0.5 * (np.log(df['High'] / df['Low']) ** 2) - \
-    #                          (2 * np.log(2) - 1) * (np.log(df['Close'] / df['Open']) ** 2)
-    df['garman_klass_var'] = 0.5 * (np.log(df['High'] / df['Low']) ** 2) - \
-                             (2 * np.log(2) - 1) * (np.log(df['Close'] / df['Open']) ** 2)
-    #Take the log stock price
-    df['Close'] = np.log(df['Close'])
+    df['garman_klass_var'] = (
+        0.5 * (np.log(df['High'] / df['Low']) ** 2) - 
+        (2 * np.log(2) - 1) * (np.log(df['Close'] / df['Open']) ** 2)
+    )
+    df['Close'] = np.log(df['Close'])  # Take log of the closing prices
     return df[['Date', 'Close', 'garman_klass_var']]
 
-# Load and process each CSV
-df1 = pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH.csv")
-df2 = pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE.csv")
-df3 = pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK.csv")
+# Load and preprocess CSV files for stocks and interest rates
+def load_data():
+    """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
+    # Load stock data
+    df1 = preprocess_stock_data(pd.read_csv(os.path.join("datasets", "UNH.csv")))
+    df2 = preprocess_stock_data(pd.read_csv(os.path.join("datasets", "PFE.csv")))
+    df3 = preprocess_stock_data(pd.read_csv(os.path.join("datasets", "MRK.csv")))
 
-# Calculate Garman-Klass variance and select relevant columns
-df1 = preprocess(df1)
-df2 = preprocess(df2)
-df3 = preprocess(df3)
+    # Rename columns for clarity
+    df1.columns = ['Date', 'log_stock_UNH', 'gk_var_UNH']
+    df2.columns = ['Date', 'log_stock_PFE', 'gk_var_PFE']
+    df3.columns = ['Date', 'log_stock_MRK', 'gk_var_MRK']
 
-# Rename columns to reflect asset names
-df1.columns = ['Date', 'log_stock_UNH', 'gk_var_UNH']
-df2.columns = ['Date', 'log_stock_PFE', 'gk_var_PFE']
-df3.columns = ['Date', 'log_stock_MRK', 'gk_var_MRK']
+    # Merge stock data by Date
+    stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
 
-# Merge DataFrames on Date
-merged_df = df1.merge(df2, on='Date').merge(df3, on='Date')
+    # Load and preprocess interest rates
+    rates = pd.read_csv(os.path.join("datasets", "DGS10.csv")).replace('.', np.nan).ffill()
+    rates.columns = ['Date', 'true_rate']
+    rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
+    rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
 
-# Select and reorder the columns
-stock_price_df = merged_df[['Date', 
-                      'log_stock_UNH', 'log_stock_PFE', 'log_stock_MRK', 
-                      'gk_var_UNH', 'gk_var_PFE', 'gk_var_MRK']]
+    # Merge stock and rate data
+    return stock_df.merge(rates, on='Date')
 
-rates = pd.read_csv(os.getcwd() + "/MH4518/datasets/DGS10.csv")
-rates.replace('.', np.nan, inplace=True)
-rates.ffill(inplace=True)
-rates.columns = ['Date', 'true_rate']
-rates['true_rate'] = pd.to_numeric(rates["true_rate"]) / 100
-rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
-
-merged_df = stock_price_df.merge(rates, on='Date')
-
-# Implement DCC-GARCH model
-
-# Risk-free interest is known on the same day, so no need for estimation
-
-# Deviation of log returns from expected
-merged_df['log_return_shock_UNH'] = merged_df['log_stock_UNH'] - merged_df['log_stock_UNH'].shift(1)
-merged_df['log_return_shock_PFE'] = merged_df['log_stock_PFE'] - merged_df['log_stock_PFE'].shift(1)
-merged_df['log_return_shock_MRK'] = merged_df['log_stock_MRK'] - merged_df['log_stock_MRK'].shift(1)
-
-# Extract shocks
-data = merged_df[['log_return_shock_UNH', 'log_return_shock_PFE', 'log_return_shock_MRK']].loc[1:20]
-
-# Step 1: Multivariate Normality Test
+# Define Mardia's test for multivariate normality
 def mardia_test(data):
     """ Mardia's test for multivariate normality """
     
@@ -91,40 +69,27 @@ def mardia_test(data):
     
     return p_value_skew, p_value_kurt
 
-# Since the kurtosis p-value is 0, we use a skew T-distribution
-# print("Mardia's test results:", mardia_test(data))
+# Fit GARCH models for each stock and extract residuals and volatilities
+def fit_garch_models(data):
+    """Fit GARCH models to stock log returns and extract residuals and conditional volatilities."""
+    garch_models = {}
+    for stock in ['UNH', 'PFE', 'MRK']:
+        garch_models[stock] = arch_model(100 * data[f'log_return_shock_{stock}'], vol='Garch', p=1, q=1).fit(disp='off')
+    return garch_models
 
 # Following the paper at https://ntnuopen.ntnu.no/ntnu-xmlui/bitstream/handle/11250/259296/724505_FULLTEXT01.pdf
-# Step 1: Fit independent GARCH models for each series.
-UNH_model = arch_model(100 * data['log_return_shock_UNH'], vol='Garch', p=1, q=1)
-UNH_model = UNH_model.fit(disp='off')
-
-PFE_model = arch_model(100 * data['log_return_shock_PFE'], vol='Garch', p=1, q=1)
-PFE_model = PFE_model.fit(disp='off')
-
-MRK_model = arch_model(100 * data['log_return_shock_MRK'], vol='Garch', p=1, q=1)
-MRK_model = MRK_model.fit(disp='off')
-
-    
-z_UNH = UNH_model.std_resid
-sigma_UNH = UNH_model.conditional_volatility
-z_PFE = PFE_model.std_resid
-sigma_PFE = PFE_model.conditional_volatility
-z_MRK = MRK_model.std_resid
-sigma_MRK = MRK_model.conditional_volatility
-z = np.vstack([z_UNH, z_PFE, z_MRK]).T  # Each column represents an asset
-sigma = np.vstack([sigma_UNH, sigma_PFE, sigma_MRK]).T
-q0 = np.cov(z, rowvar=False)
-print(q0)
-    
-# Step 2: Fit correlation terms
-def log_loss(x, t, z, sigma, q0):
-    
+# Define the DCC-GARCH loss function for parameter optimization
+def dcc_garch_log_loss(x, shocks, sigma, q0):
+    """Calculate DCC-GARCH model log-likelihood given parameters."""
     a = (np.tanh(x[0]) + 1) / 2
-    b = np.minimum((np.tanh(x[1]) + 1) / 2,1-a)
-    nu = x[2]
-    iota = x[3:].reshape(-1,1)
+    b = ((np.tanh(x[1]) + 1) / 2) * (1-a)
+    nu = np.maximum(x[2], 2)  # Ensure nu > 2 for stability
+    iota = x[3:].reshape(-1, 1)
     
+    # Initialize correlation matrix
+    qt = q0
+    
+    # Initialize skewed t-distribution parameters
     g1 = sp.special.gamma((nu - 1) / 2)
     g2 = sp.special.gamma(nu / 2)
     iota_norm = np.sum(iota**2)
@@ -135,45 +100,32 @@ def log_loss(x, t, z, sigma, q0):
     Omega = np.eye(3)
     if not np.isclose(iota_norm, 0):
         Omega = Omega + iota_norm**-1 * (-1 + denom * (k - 1) / num) * iota @ iota.T
-        # Omega = Omega + iota_norm**-1 * (-1 + (denom * (nu - (nu - 2) * iota_norm)) * (k - 1) / (4 * nu * num)) * iota @ iota.T
     Omega = Omega * (1 - 2 / nu)
-    d = np.diag(np.sqrt(np.diag(Omega)))
-    
     xi = -np.sqrt(nu / np.pi) * (g1 / g2) * (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
-    
-    # Initialize Q_t with Q0 and set starting values for a and b
-    qt = q0
     loss = (len(z) - 1) * (np.log(sp.special.gamma((nu + 3) / 2)) - 0.5 * np.log(np.linalg.det(Omega)) \
             - 1.5 * np.log(np.pi * nu) - np.log(g2))
-
-    # Loop through timesteps to calculate each correlation matrix
-    for i in range(1, len(z)):
-        a_t = z[i].reshape(-1, 1)
-        qt = (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * qt  # Update Q_t
-        q_t_star_inv = np.diag(1 / np.sqrt(np.diag(qt)))  # Diagonal matrix with inverted standard deviations
-        R_t = q_t_star_inv @ qt @ q_t_star_inv  # Normalize to get R_t
-        
+    
+    # Calculate the log-likelihood
+    for i in range(1, len(shocks)):
+        a_t = shocks[i].reshape(-1, 1)
+        qt = (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * qt
+        q_t_star_inv = np.diag(1 / np.sqrt(np.diag(qt)))
+        R_t = q_t_star_inv @ qt @ q_t_star_inv
         D_t = np.diag(sigma[i])
         H_t = D_t @ R_t @ D_t
+        
+        # Compute Q_a_t and update loss
         v = np.linalg.solve(np.linalg.cholesky(H_t), a_t) - xi
         Q_a_t = v.T @ np.linalg.solve(Omega, v)
-        
-        loss = loss - 0.5 * (nu + 3) * np.log(1 + Q_a_t / nu) - 0.5 * np.log(np.linalg.det(R_t)) \
-               + np.log(t.pdf(iota.T @ d.T @ np.linalg.solve(d, v) * np.sqrt((nu + 3) / (Q_a_t + nu)), df=nu+3))
+        loss -= 0.5 * (nu + 3) * np.log(1 + Q_a_t / nu)
+        loss -= 0.5 * np.log(np.linalg.det(R_t))
     
     return -loss
 
-params = sp.optimize.minimize(log_loss, np.array([0.25, 0.25, 3, 0, 0, 0]), (t, z, sigma, q0), method='SLSQP', \
-                              bounds=[(None, None), (None, None), (2, None), (None, None), (None, None), (None, None)]).x
+def multivariate_skew_t(nu, iota, steps, paths):
 
-def forecast(steps, params):
-    
-    a = (np.tanh(params[0]) + 1) / 2
-    b = np.minimum((np.tanh(params[1]) + 1) / 2,1-a)
-    nu = params[2]
-    iota = params[3:].reshape(-1,1)
-    
-    # Sample for errors
+    # Using Azzalini's skew Student's t-distribution. Sampled from a multivariate normal one dimension higher and projected and reflected accordingly
+    # Used to model our errors, which inherently have kurtosis and skew
     g1 = sp.special.gamma((nu - 1) / 2)
     g2 = sp.special.gamma(nu / 2)
     iota_norm = np.sum(iota**2)
@@ -183,43 +135,104 @@ def forecast(steps, params):
     Omega = np.eye(3)
     if not np.isclose(iota_norm, 0):
         Omega = Omega + iota_norm**-1 * (-1 + denom * (k - 1) / num) * iota @ iota.T
-        # Omega = Omega + iota_norm**-1 * (-1 + (denom * (nu - (nu - 2) * iota_norm)) * (k - 1) / (4 * nu * num)) * iota @ iota.T
     Omega = Omega * (1 - 2 / nu)
     w = (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
     err_cov = np.block([
         [1, w.T],
         [w, Omega]
     ])
-    future_shock_process = multivariate_normal.rvs(cov=err_cov, size=steps)
-    future_shock_process = future_shock_process[:,1:] * np.where(future_shock_process[:,0] < 0, -1, 1).reshape(-1,1) # Future errors generated by skewed t
-    future_shock = np.empty(shape=(0,3))
-    
-    UNH_forecast = UNH_model.forecast(horizon=steps)
-    PFE_forecast = PFE_model.forecast(horizon=steps)
-    MRK_forecast = MRK_model.forecast(horizon=steps)
-    
-    UNH_vars = UNH_forecast.variance
-    PFE_vars = PFE_forecast.variance
-    MRK_vars = MRK_forecast.variance
-    univariate_vars = np.vstack([UNH_vars, PFE_vars, MRK_vars]).T
-    
+
+    # future_shock_process = multivariate_normal.rvs(cov=err_cov, size=steps)
+    # future_shock_process = future_shock_process[:,1:] * np.where(future_shock_process[:,0] < 0, -1, 1).reshape(-1,1) # Future errors generated by skewed t
+
+    # return future_shock_process
+
+    vars = 4 * steps
+    remaining = np.maximum(vars - 21201, 0)
+    sobol_engine = qmc.Sobol(np.minimum(vars, 21201))
+    paths1 = sobol_engine.random(paths)
+    paths2 = np.random.randn(paths, remaining)
+    brownian = np.concatenate((paths1, paths2), axis=1).reshape(paths,steps,4,1)
+    brownian = np.linalg.cholesky(err_cov) @ brownian
+    brownian = brownian[:,:,:3,:] * np.where(brownian[:,:,-1,:] < 0, -1, 1).reshape(paths,steps,1,1)
+    brownian = brownian.reshape(paths, steps, 3).transpose((0,2,1))
+
+    return brownian
+
+# Forecast future shocks based on the optimized DCC-GARCH parameters
+def forecast_dcc_garch(steps, num_paths, params, garch_models, shocks, q0):
+    """Forecast future shocks using DCC-GARCH model over given steps."""
+    a = (np.tanh(params[0]) + 1) / 2
+    b = ((np.tanh(params[1]) + 1) / 2) * (1-a)
+    nu = params[2]
+    iota = params[3:].reshape(-1, 1)
+    future_shock = np.empty(shape=(num_paths,3,0))
+        
+    univariate_vars = np.vstack([garch_models[stock].forecast(horizon=steps).variance for stock in ['UNH', 'PFE', 'MRK']]).T
+    future_shock_process = multivariate_skew_t(nu, iota, steps, num_paths)
+
     q_t = q0
-    for i in range(1, len(z)):
-        a_t = z[i].reshape(-1, 1)
-        q_t = (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * q_t
+    shocks = np.array(shocks)
+    for i in range(1, len(shocks)):
+        a_t = shocks[i,:].reshape(-1, 1)
+        q_t = (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * q_t 
+    
+    q0 = q0.reshape(1,3,3)
+    q_star_t = np.diag(np.diag(q_t)**-0.5).reshape(1,3,3)
+    q_t = q_t.reshape(1,3,3)
     
     for i in range(steps):
-        a_t = future_shock_process[i,:]
-        
-        q_star_t = np.diag(1 / np.sqrt(np.diag(q_t)))
+        a_t = future_shock_process[:,:,i].reshape(-1,3,1)
+
         d_t = np.diag(np.sqrt(univariate_vars[i,:]))
         next_shock = d_t @ q_star_t @ np.linalg.cholesky(q_t) @ a_t
-        future_shock = np.concatenate((future_shock, next_shock.reshape(1,3)), axis=0)
+        future_shock = np.concatenate((future_shock, next_shock.reshape(num_paths,3,1)), axis=2)
         
-        q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * q_t
+        q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
+        q_star_t = np.apply_along_axis(np.diag, -1, np.diagonal(q_t, axis1=1, axis2=2)**-0.5)
     
-    return future_shock
-        
-    
-print(params)
-print(forecast(5, params))
+    return future_shock / 100
+
+# Main execution
+merged_df = load_data()
+
+# Calculate log-return shocks
+for stock in ['UNH', 'PFE', 'MRK']:
+    merged_df[f'log_return_shock_{stock}'] = (
+        merged_df[f'log_stock_{stock}'] - merged_df[f'log_stock_{stock}'].shift(1)
+    )
+
+# Select and fit GARCH models
+shocks = merged_df[['log_return_shock_UNH', 'log_return_shock_PFE', 'log_return_shock_MRK']].dropna().loc[123:512]
+garch_models = fit_garch_models(shocks)
+
+garch_data = {}
+for stock in ['UNH', 'PFE', 'MRK']:
+    garch_data[stock] = {
+            'std_resid': garch_models[stock].std_resid,
+            'conditional_volatility': garch_models[stock].conditional_volatility
+    }
+
+# Initial correlation matrix
+z = np.column_stack([garch_data[stock]['std_resid'] for stock in ['UNH', 'PFE', 'MRK']])
+sigma = np.column_stack([garch_data[stock]['conditional_volatility'] for stock in ['UNH', 'PFE', 'MRK']])
+q0 = np.cov(z, rowvar=False)
+
+# Optimize DCC-GARCH parameters
+initial_params = [0.25, 0.25, 3, 0, 0, 0]
+optimized_params = sp.optimize.minimize(
+    dcc_garch_log_loss, initial_params, args=(z, sigma, q0), method='SLSQP',
+    bounds=[(-2.3, 2.3), (-2.3, 2.3), (2, None), (None, None), (None, None), (None, None)]
+).x
+# Forecast future shocks
+future_shocks = forecast_dcc_garch(10, 3, optimized_params, garch_models, shocks, q0)
+
+print("Optimized Parameters:")
+a = (np.tanh(optimized_params[0]) + 1) / 2
+print('a:', a)
+print('b:', ((np.tanh(optimized_params[1]) + 1) / 2) * (1-a))
+print('nu:', optimized_params[2])
+print('iota:', optimized_params[3:].reshape(-1, 1))
+print()
+print("Future Shocks:")
+print(future_shocks)
