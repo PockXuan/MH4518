@@ -44,30 +44,6 @@ def load_data():
 
     return stock_df
 
-# # Define Mardia's test for multivariate normality
-# def mardia_test(data):
-#     """ Mardia's test for multivariate normality """
-    
-#     # Calculate Mardia's skewness and kurtosis
-#     data = torch.tensor(data.values)
-#     n = data.shape[0]
-#     mean = torch.mean(data, dim=0)
-#     observations = data.reshape(-1,1,3) - mean
-#     sigma = torch.mean(observations.transpose(1,2) @ observations, dim=0)
-#     rhs = torch.linalg.solve(sigma, observations.transpose(1,2))
-#     prod = observations.reshape(-1,3) @ rhs.reshape(3,-1)
-    
-#     # Chi-square test for skewness
-#     skewness = torch.sum(prod**3) / (6 * n)
-#     df_skew = n * (n + 1) * (n + 2) / 6  # degrees of freedom for skewness
-#     p_value_skew = 1 - stats.chi2.cdf(skewness, df=df_skew)
-    
-#     # Normal distribution test for kurtosis
-#     kurtosis = np.sqrt(n / (8 * 3 * 5)) * (torch.mean(torch.diag(prod)**2) - 15)
-#     p_value_kurt = 2 * (1 - stats.norm.cdf(abs(kurtosis)))
-    
-#     return p_value_skew, p_value_kurt
-
 # Fit GARCH models for each stock and extract residuals and volatilities
 def fit_garch_models(data):
     """Fit GARCH models to stock simple returns and extract residuals and conditional volatilities."""
@@ -101,7 +77,7 @@ def dcc_garch_log_loss(x, shocks, sigma, q0):
         Omega = Omega + iota_norm**-1 * (-1 + denom * (k - 1) / num) * iota @ iota.T
     Omega = Omega * (1 - 2 / nu)
     xi = -np.sqrt(nu / np.pi) * (g1 / g2) * (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
-    loss = (len(z) - 1) * (np.log(sp.special.gamma((nu + 3) / 2)) - 0.5 * np.log(np.linalg.det(Omega)) \
+    loss = (len(shocks) - 1) * (np.log(sp.special.gamma((nu + 3) / 2)) - 0.5 * np.log(np.linalg.det(Omega)) \
             - 1.5 * np.log(np.pi * nu) - np.log(g2))
     
     # Calculate the log-likelihood
@@ -156,17 +132,8 @@ def multivariate_skew_t(nu, iota, steps, paths):
         [1, skew_star.reshape(1,-1)],
         [skew_star.reshape(-1,1), Omega]
     ])
-
-    vars = 4 * steps
-    # remaining = np.maximum(vars - 21201, 0)
-    # sobol_engine = stats.qmc.Sobol(np.minimum(vars, 21201))
-    # paths1 = sobol_engine.random(paths)
-    # paths2 = np.random.rand(paths, remaining)
-    # norm = np.concatenate((paths1, paths2), axis=1).reshape(paths,steps,4,1)
-    # norm = (norm - 2 * 1e-6) + 1e-6
-    # norm = stats.norm.ppf(norm)
+    
     norm = np.random.randn(paths,steps,4,1)
-
     norm = np.linalg.cholesky(err_cov) @ norm
     norm = (norm[:,:,:3,:] * np.where(norm[:,:,-1,:] < 0, -1, 1).reshape(paths,steps,1,1))
     norm = norm.reshape(paths, steps, 3)
@@ -216,58 +183,140 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
     
     return forecast
 
-# Main execution
-merged_df = load_data()
+# Forecast future shocks based on the optimized DCC-GARCH parameters
+def forecast_dcc_garch2(steps, num_paths, r, s0, params, garch_models, shocks, q0):
+    """Forecast future shocks using DCC-GARCH model over given steps."""
 
-# Find simple returns shock
-for stock in ['UNH', 'PFE', 'MRK']:
-    merged_df[f'simple_return_shock_{stock}'] = (
-        (merged_df[f'stock_price_{stock}'] - merged_df[f'stock_price_{stock}'].shift(1) * (1 + merged_df['true_rate'] * dt)) / (merged_df[f'stock_price_{stock}'].shift(1) * np.sqrt(dt))
-        )
+    a = (np.tanh(params[0]) + 1) / 2
+    b = ((np.tanh(params[1]) + 1) / 2) * (1-a)
+    nu = params[2]
+    iota = params[3:].reshape(-1, 1)
+    forecast = np.tile(s0, (num_paths, 1, 1))
+        
+    univariate_vars = np.vstack([garch_models[stock].forecast(horizon=steps).variance for stock in ['UNH', 'PFE', 'MRK']]).T
+    future_shock_process = multivariate_skew_t(nu, iota, steps, num_paths)
+    future_shock_process = np.random.randn(*future_shock_process.shape)
 
-# Select and fit GARCH models
-shocks = merged_df[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().loc[1:]
+    q_t = q0
+    shocks = np.array(shocks)
+    for i in range(1, len(shocks)):
+        a_t = shocks[i,:].reshape(-1, 1)
+        q_t = (1 - a - b) * q0 + a * (a_t @ a_t.T) + b * q_t
+    
+    q0 = q0.reshape(1,3,3)
+    q_star_t = np.diag(np.diag(q_t)**-0.5).reshape(1,3,3)
+    q_t = q_t.reshape(1,3,3)
+    
+    for i in range(steps):
+        a_t = future_shock_process[:,:,i].reshape(num_paths,3,1)
+        
+        d_t = np.diag(np.sqrt(univariate_vars[i,:]))
+        next_shock = d_t @ q_star_t @ np.linalg.cholesky(q_t) @ a_t
+        next_stock_price = forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt) / 100)
+        forecast = np.concatenate((forecast, next_stock_price.reshape(num_paths,3,1)), axis=2)
+        
+        q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
+        q_star_t = np.apply_along_axis(np.diag, -1, np.diagonal(q_t, axis1=1, axis2=2)**-0.5)
+    
+    return forecast
 
-# print("Goodness of fit")
-# print(multivariate_normality(shocks))
+class GARCH():
 
-# print("Skew")
-# mardia_test(shocks)
+    def __init__(self, starting_date=0):
 
-garch_models = fit_garch_models(shocks)
+        self.current_date = 411 + starting_date
 
-garch_data = {}
-for stock in ['UNH', 'PFE', 'MRK']:
-    garch_data[stock] = {
-            'std_resid': garch_models[stock].std_resid,
-            'conditional_volatility': garch_models[stock].conditional_volatility
-    }
+        self.data = load_data().iloc[:self.current_date+1]
+        for stock in ['UNH', 'PFE', 'MRK']:
+            self.data[f'simple_return_shock_{stock}'] = (
+                (self.data[f'stock_price_{stock}'] - self.data[f'stock_price_{stock}'].shift(1) * (1 + self.data['true_rate'] * dt)) / (self.data[f'stock_price_{stock}'].shift(1) * np.sqrt(dt))
+                )
+        self.shocks = self.data[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().iloc[1:]
+    
+    def fit(self):
 
-# Initial correlation matrix
-z = np.column_stack([garch_data[stock]['std_resid'] for stock in ['UNH', 'PFE', 'MRK']])
-sigma = np.column_stack([garch_data[stock]['conditional_volatility'] for stock in ['UNH', 'PFE', 'MRK']])
-q0 = np.cov(z, rowvar=False)
-r = merged_df['true_rate'].iloc[-1]
+        self.garch_models = fit_garch_models(self.shocks)
 
-# Optimize DCC-GARCH parameters
-initial_params = [0.25, 0.25, 3, 0, 0, 0]
-optimized_params = sp.optimize.minimize(
-    dcc_garch_log_loss, initial_params, args=(z, sigma, q0), method='SLSQP',
-    bounds=[(-2.3, 2.3), (-2.3, 2.3), (2, None), (None, None), (None, None), (None, None)]
-).x
+        self.garch_data = {}
+        for stock in ['UNH', 'PFE', 'MRK']:
+            self.garch_data[stock] = {
+                    'std_resid': self.garch_models[stock].std_resid,
+                    'conditional_volatility': self.garch_models[stock].conditional_volatility
+            }
 
-print("Optimized Parameters:")
-a = (np.tanh(optimized_params[0]) + 1) / 2
-print('a:', a)
-print('b:', ((np.tanh(optimized_params[1]) + 1) / 2) * (1-a))
-print('nu:', optimized_params[2])
-print('iota:', optimized_params[3:].reshape(-1, 1))
-print()
+        # Initial correlation matrix
+        self.z = np.column_stack([self.garch_data[stock]['std_resid'] for stock in ['UNH', 'PFE', 'MRK']])
+        self.sigma = np.column_stack([self.garch_data[stock]['conditional_volatility'] for stock in ['UNH', 'PFE', 'MRK']])
+        self.q0 = np.cov(self.z, rowvar=False)
+        self.r = self.data['true_rate'].iloc[self.current_date]
+        
+        initial_params = [0.25, 0.25, 3, 0, 0, 0]
+        self.optimized_params = sp.optimize.minimize(
+            dcc_garch_log_loss, initial_params, args=(self.z, self.sigma, self.q0), method='SLSQP',
+            bounds=[(-2.3, 2.3), (-2.3, 2.3), (2, None), (None, None), (None, None), (None, None)]
+        ).x
+    
+    def forecast(self, steps, num_paths):
+        s0 = np.array(self.data[['stock_price_UNH', 'stock_price_PFE', 'stock_price_MRK']].iloc[self.current_date]).reshape(1,3,1)
+        return forecast_dcc_garch(steps, num_paths, self.r, s0, self.optimized_params, self.garch_models, self.shocks, self.q0)
 
-# Forecast future shocks
-s0 = np.array(merged_df[['stock_price_UNH', 'stock_price_PFE', 'stock_price_MRK']].iloc[-1]).reshape(1,3,1)
-forecast = forecast_dcc_garch(250, 1000, r, s0, optimized_params, garch_models, shocks, q0)
+class GARCH2():
 
-import matplotlib.pyplot as plt
-plt.plot(np.log(forecast[:,0,:].T))
-plt.show()
+    def __init__(self, starting_date=0):
+
+        self.current_date = 411 + starting_date
+
+        self.data = load_data().iloc[:self.current_date+1]
+        for stock in ['UNH', 'PFE', 'MRK']:
+            self.data[f'simple_return_shock_{stock}'] = (
+                (self.data[f'stock_price_{stock}'] - self.data[f'stock_price_{stock}'].shift(1) * (1 + self.data['true_rate'] * dt)) / (self.data[f'stock_price_{stock}'].shift(1) * np.sqrt(dt))
+                )
+        self.shocks = self.data[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().iloc[1:]
+    
+    def fit(self):
+
+        self.garch_models = fit_garch_models(self.shocks)
+
+        self.garch_data = {}
+        for stock in ['UNH', 'PFE', 'MRK']:
+            self.garch_data[stock] = {
+                    'std_resid': self.garch_models[stock].std_resid,
+                    'conditional_volatility': self.garch_models[stock].conditional_volatility
+            }
+
+        # Initial correlation matrix
+        self.z = np.column_stack([self.garch_data[stock]['std_resid'] for stock in ['UNH', 'PFE', 'MRK']])
+        self.sigma = np.column_stack([self.garch_data[stock]['conditional_volatility'] for stock in ['UNH', 'PFE', 'MRK']])
+        self.q0 = np.cov(self.z, rowvar=False)
+        self.r = self.data['true_rate'].iloc[self.current_date]
+        
+        initial_params = [0.25, 0.25, 3, 0, 0, 0]
+        self.optimized_params = sp.optimize.minimize(
+            dcc_garch_log_loss, initial_params, args=(self.z, self.sigma, self.q0), method='SLSQP',
+            bounds=[(-2.3, 2.3), (-2.3, 2.3), (2, None), (None, None), (None, None), (None, None)]
+        ).x
+    
+    def forecast(self, steps, num_paths):
+        s0 = np.array(self.data[['stock_price_UNH', 'stock_price_PFE', 'stock_price_MRK']].iloc[self.current_date]).reshape(1,3,1)
+        return forecast_dcc_garch2(steps, num_paths, self.r, s0, self.optimized_params, self.garch_models, self.shocks, self.q0)
+
+if __name__=='__main__':
+    model = GARCH()
+    model.fit()
+    forecast = model.forecast(250, 100)
+
+    model2 = GARCH2()
+    model2.fit()
+    forecast2 = model.forecast(250, 100)
+
+    data = load_data().loc[412:,[f'stock_price_{stock}' for stock in ['UNH', 'PFE', 'MRK']]]
+    data = np.array(data)
+
+    # print(forecast.shape)
+    # print(simul.shape)
+
+    import matplotlib.pyplot as plt
+    plt.plot(np.log(forecast[:,0,:].T), color='blue', alpha=0.3)
+    plt.plot(np.log(forecast2[:,0,:].T), color='green', alpha=0.3)
+    plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    plt.show()
