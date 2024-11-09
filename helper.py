@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from scipy.stats import norm
 
 '''
 This function is used to estimate the parameters of the Geometric Brownian Motion
@@ -23,3 +24,20 @@ def parameterEstimationWithTicker(ticker: str, start: str, end: str) -> tuple[fl
     import yfinance as yf
     df = yf.Ticker(ticker).history(start=start, end=end)
     return parameterEsimation(df)
+
+
+def calculate_var_cvar(returns, confidence_level=0.95):
+    # Calculate the mean and standard deviation of returns
+    mu = np.mean(returns)
+    sigma = np.std(returns)
+
+    # Calculate the Z-score for the given confidence level
+    z_score = norm.ppf(1 - confidence_level)
+
+    # Calculate VaR using the parametric method
+    var = mu + z_score * sigma
+
+    # Calculate CVaR (Expected Shortfall)
+    cvar = mu - sigma * norm.pdf(z_score) / (1 - confidence_level)
+
+    return var, cvar

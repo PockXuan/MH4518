@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_normal, qmc, norm
 import torch
 from tqdm import tqdm
 
@@ -60,24 +60,35 @@ class MultiBS:
         self.Sigma = torch.tensor(np.cov(self.log_returns_matrix.T) / self.dt)
 
     # Simulation function for Geometric Brownian Motion (GBM)
-    def simulate_multi_GBM_exact(self, T, M=1_000):
+    def simulate_multi_GBM_exact(self, T, M=10_000, S0=None):
         
         m = int(T / self.dt)  # number of periods
-        S0 = np.array([self.asset_1["Close"].iloc[-m], 
-                       self.asset_2["Close"].iloc[-m], 
-                       self.asset_3["Close"].iloc[-m]])
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
         p = len(S0)           # number of assets
-        S = np.zeros((p, m + 1, M))
-        S[:, 0, :] = S0[:, np.newaxis]
+        S = np.empty((2 * (M // 2), 3, 1 + m))
+        S0 = S0.flatten()
+        S[:,:,0] = np.tile(S0, (2 * (M // 2), 1, 1)).reshape(-1, p)
         
+        n = M // 2
         # Simulate multivariate normal random variables (m x p matrix)
-        Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m,M))
+        sobol = qmc.Sobol(p * m)
+        Z = norm.ppf(sobol.random(n)).reshape(n, m, p, 1) # Remember to inverse CDF :)
+        Z = np.linalg.cholesky(self.Sigma) @ Z
+        Z = Z.transpose(1,2)
+        Z = np.concatenate((Z,-Z), axis=0).reshape(2 * n, p, m)
         
+        # Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m,n))
         # Iterate and simulate asset prices
-        for j in range(1, m + 1):
-            S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
+        for j in range(m):
+            # S[:, j, :n] = S[:, j - 1, :n] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
+
+            # S[:, j, n:] = S[:, j - 1, n:] * np.exp(antithetic_Z[j - 1, :].T)
+            S[:,:,j+1] = S[:,:,j] * (1 + self.v * self.dt + Z[:,:,j] * np.sqrt(self.dt))
         
-        return S
+        return S.transpose(1,2,0)
     
     # Calibrate using simulated forward data
     def calibrate_model(self, simulated_data):
@@ -143,6 +154,7 @@ class MultiBS:
         self.plot_backtest_results(simulated_data=simulated_data, historical_prices=historical_prices, T=T, mse=mse)
 
         print("Mean Squared Error (MSE) for each asset:", mse)
+        print("Root Mean Squared Error (RMSE) for each asset:", np.sqrt(mse))
         return mse
     
     # Plotting function for backtesting
@@ -164,8 +176,8 @@ class MultiBS:
             for path in range(M):
                 ax.plot(simulated_data[i, :, path], color='blue', alpha=0.3)
             # Plot the actual historical price path for asset i
-            ax.plot(historical_prices[:, i], color='red', label="Actual Price" if i == 0 else None)
-            ax.annotate(f'MSE: {mse[i]:.4f}', xy=(0.05, 0.9), xycoords='axes fraction', fontsize=12)
+            ax.plot(historical_prices[:, i], color='red', label="Actual Price")
+            ax.annotate(f'MSE: {mse[i]:.4f}', xy=(0.95, 0.95), xycoords='axes fraction', horizontalalignment='right', verticalalignment='top', fontsize=12)
             ax.axhline(y=threshold_values[i], color='red', linestyle='--', label='59% of Initial Value')
             ax.set_title(f'Backtest Results for Asset {i+1}')
             ax.set_xlabel('Time Steps')
@@ -213,3 +225,65 @@ class MultiBS:
 
         return path
 
+    # Calculate Delta using finite difference method
+    def calculate_delta(self, T=1, M=10_000, h=0.01):
+        S0 = np.array([self.asset_1["Close"].iloc[int(-T/self.dt)],
+                       self.asset_2["Close"].iloc[int(-T/self.dt)],
+                       self.asset_3["Close"].iloc[int(-T/self.dt)]])
+
+        S0_plus = S0.copy()
+        S0_minus = S0.copy()
+        
+        # Perturb the asset price
+        S0_plus *= (1 + h)
+        S0_minus *= (1 + h)
+        V_S_plus = self.simulate_multi_GBM_exact(T, M, S0_plus)[:, -1, :].mean(axis=1)
+        V_S_minus = self.simulate_multi_GBM_exact(T, M, S0_minus)[:, -1, :].mean(axis=1)
+        
+        # Calculate Delta for each asset
+        delta = (V_S_plus - V_S_minus) / (2 * S0 * h)
+        return delta
+    
+    def calculate_gamma(self, T=1, M=10_000, h=0.01):
+        S0 = np.array([self.asset_1["Close"].iloc[int(-T / self.dt)],
+                    self.asset_2["Close"].iloc[int(-T / self.dt)],
+                    self.asset_3["Close"].iloc[int(-T / self.dt)]])
+        p = len(S0)
+        gamma = np.zeros((p, p))
+
+        # Scale the perturbation size by the underlying prices
+        h_scaled = h * S0
+
+        
+        # Calculate Gamma for each pair of assets using the new formula
+        for i in range(p):
+            for j in range(p):                
+                # Perturb asset prices for four-point finite difference calculation
+                S0_ij_pp = S0.copy()  # S + h*e_i + h*e_j
+                S0_ij_pm = S0.copy()  # S + h*e_i - h*e_j
+                S0_ij_mp = S0.copy()  # S - h*e_i + h*e_j
+                S0_ij_mm = S0.copy()  # S - h*e_i - h*e_j
+                
+                # Apply perturbations
+                S0_ij_pp[i] += h_scaled[i]
+                S0_ij_pp[j] += h_scaled[j]
+
+                S0_ij_pm[i] += h_scaled[i]
+                S0_ij_pm[j] -= h_scaled[j]
+
+                S0_ij_mp[i] -= h_scaled[i]
+                S0_ij_mp[j] += h_scaled[j]
+
+                S0_ij_mm[i] -= h_scaled[i]
+                S0_ij_mm[j] -= h_scaled[j]
+
+                # Simulate option values with perturbed prices (using final time step)
+                V_S_ij_pp = self.simulate_multi_GBM_exact(T, M, S0_ij_pp).mean(axis=2)[:, -1]
+                V_S_ij_pm = self.simulate_multi_GBM_exact(T, M, S0_ij_pm).mean(axis=2)[:, -1]
+                V_S_ij_mp = self.simulate_multi_GBM_exact(T, M, S0_ij_mp).mean(axis=2)[:, -1]
+                V_S_ij_mm = self.simulate_multi_GBM_exact(T, M, S0_ij_mm).mean(axis=2)[:, -1]
+
+                # Calculate Gamma using the central finite difference formula
+                gamma[i, j] = (V_S_ij_pp[i] - V_S_ij_pm[i] - V_S_ij_mp[i] + V_S_ij_mm[i]) / (4 * h_scaled[i] * h_scaled[j])
+
+        return gamma
