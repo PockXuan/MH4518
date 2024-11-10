@@ -39,16 +39,24 @@ class GBM:
         plt.show()
 
 class MultiBS:
-    def __init__(self, path_1="datasets/UNH.csv", path_2="datasets/PFE.csv", path_3="datasets/MRK.csv") -> None:
+    def __init__(self, path_1="datasets/UNH.csv", path_2="datasets/PFE.csv", path_3="datasets/MRK.csv", initial_fixing="2023-08-23") -> None:
         asset_1 = pd.read_csv(path_1)
         asset_2 = pd.read_csv(path_2)
         asset_3 = pd.read_csv(path_3)
         self.asset_1 = asset_1
         self.asset_2 = asset_2
         self.asset_3 = asset_3
+        self.asset_1["Date"] = pd.to_datetime(self.asset_1["Date"]).dt.strftime("%Y-%m-%d")
+        self.asset_2["Date"] = pd.to_datetime(self.asset_2["Date"]).dt.strftime("%Y-%m-%d")
+        self.asset_3["Date"] = pd.to_datetime(self.asset_3["Date"]).dt.strftime("%Y-%m-%d")
         log_returns1 = asset_1["log_return"].dropna().values
         log_returns2 = asset_2["log_return"].dropna().values
         log_returns3 = asset_3["log_return"].dropna().values
+        start_date = pd.to_datetime(initial_fixing).strftime("%Y-%m-%d")
+        barrier_1 = self.asset_1.loc[self.asset_1["Date"] == start_date]["Close"].iloc[0] * 0.59
+        barrier_2 = self.asset_2.loc[self.asset_2["Date"] == start_date]["Close"].iloc[0] * 0.59
+        barrier_3 = self.asset_3.loc[self.asset_3["Date"] == start_date]["Close"].iloc[0] * 0.59
+        self.barrier = np.array([barrier_1, barrier_2, barrier_3])
         
         self.dt = 1 / 250  # daily time increment (assuming 250 trading days per year)
         
@@ -61,6 +69,57 @@ class MultiBS:
 
     # Simulation function for Geometric Brownian Motion (GBM)
     def simulate_multi_GBM_exact(self, T, M=10_000, S0=None):
+        
+        m = int(T / self.dt)  # number of periods
+
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
+            
+        # Single asset case to fix broadcasting issue \_(ツ)_/
+        if m == 1:
+            Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m,M))
+            S = np.zeros((3, m+1, M))
+            S[:, 0, :] = S0[:, np.newaxis]
+            S[:, 1, :] = S[:, 0, :] * np.exp(Z.T)
+            return S
+        
+        p = len(S0)           # number of assets
+        S = np.zeros((p, m+1, M))
+        S[:, 0, :] = S0[:, np.newaxis]    
+        # Simulate multivariate normal random variables (m x p matrix)
+        
+        Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m,M))
+        # Iterate and simulate asset prices
+        for j in range(1, m + 1):
+            S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
+        return S
+    
+    # Simulation function for Geometric Brownian Motion (GBM)
+    def simulate_multi_GBM_antithetic(self, T, M=10_000, S0=None):
+        
+        m = int(T / self.dt)  # number of periods
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
+        p = len(S0)           # number of assets
+        S = np.zeros((p, m+1, M))
+        S[:, 0, :] = S0[:, np.newaxis]    
+        n = M // 2
+        # Simulate multivariate normal random variables (m x p matrix)
+        
+        Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m,n))
+        antithetic_Z = -Z
+        # Iterate and simulate asset prices
+        for j in range(1, m+1):
+            S[:, j, :n] = S[:, j - 1, :n] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
+            S[:, j, n:] = S[:, j - 1, n:] * np.exp(antithetic_Z[j - 1, :].T)
+        return S
+    
+    
+    def simulate_multi_GBM_quasi(self, T, M=10_000, S0=None):
         
         m = int(T / self.dt)  # number of periods
         if S0 is None:
@@ -126,47 +185,57 @@ class MultiBS:
             # Plot each path for asset i
             ax.plot(simulated_data[i], alpha=0.7)
             ax.set_title(f'Simulated Paths for Asset {i+1}')
+            ax.axhline(y=self.barrier[i], color='red', linestyle='--', label='59% of Initial Value')
+            ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
+                    xytext=(-30, 0), textcoords='offset points',
+                    color='red', fontsize=10, va='center', ha='right')
             ax.set_xlabel('Time Steps')
             ax.set_ylabel('Simulated Price')
         
         plt.tight_layout()
         plt.show()
+    
+    def backtest(self, M=10_000, start_date="2023-08-23", end_date="2024-08-01"):
+        if start_date is None:
+            raise ValueError("Please provide a valid start date for backtesting.")
 
-    # Backtesting function
-    def backtest(self, T, M):
-        # Determine the start date for the backtest
-        historical_prices_1 = self.asset_1["Close"].iloc[-int(T / self.dt):].values
-        historical_prices_2 = self.asset_2["Close"].iloc[-int(T / self.dt):].values
-        historical_prices_3 = self.asset_3["Close"].iloc[-int(T / self.dt):].values
+        # Convert the start_date to a pandas datetime format
+        start_date = pd.to_datetime(start_date).strftime("%Y-%m-%d")
+        # Find the index of the start_date in the asset data
+        start_index = self.asset_1.loc[self.asset_1["Date"] == start_date]["Close"].index[0]
+
+        # Convert the end_date to a pandas datetime format
+        end_date = pd.to_datetime(end_date).strftime("%Y-%m-%d")
+        # Find the index of the end_date in the asset data
+        end_index = self.asset_1.loc[self.asset_1["Date"] == end_date]["Close"].index[0]
+
+        # Slice the historical data from start_date onwards
+        historical_prices_1 = self.asset_1["Close"].iloc[start_index:end_index+1].values
+        historical_prices_2 = self.asset_2["Close"].iloc[start_index:end_index+1].values
+        historical_prices_3 = self.asset_3["Close"].iloc[start_index:end_index+1].values
         historical_prices = np.column_stack([historical_prices_1, historical_prices_2, historical_prices_3])
-        
-        # Initial prices for backtest (T periods ago)
-        S0 = historical_prices[0, :]
-        
+
+        # Initial prices for backtest (from start_date)
+        T = (end_index - start_index) * self.dt  # Time horizon for backtesting
+
         # Run forward simulation starting from S0
-        simulated_data = self.simulate_multi_GBM_exact(T, M)
+        simulated_data = self.simulate_multi_GBM_exact(T, M, S0=historical_prices[0, :])
         
         # Plot backtesting results
         
-        # Calculate error metrics (e.g., mean squared error)
-        mse = np.mean((simulated_data[:, :len(historical_prices), :].mean(axis=2) - historical_prices.T) ** 2, axis=1)
+        mse = np.mean((simulated_data[:, :, :].mean(axis=2) - historical_prices.T) ** 2, axis=1)
         
-        self.plot_backtest_results(simulated_data=simulated_data, historical_prices=historical_prices, T=T, mse=mse)
+        self.plot_backtest_results(simulated_data=simulated_data, historical_prices=historical_prices, mse=mse)
 
         print("Mean Squared Error (MSE) for each asset:", mse)
         print("Root Mean Squared Error (RMSE) for each asset:", np.sqrt(mse))
         return mse
+
     
     # Plotting function for backtesting
-    def plot_backtest_results(self, simulated_data, historical_prices, mse, T=1):
-        historical_prices_1 = self.asset_1["Close"].iloc[-int(T / self.dt):].values
-        historical_prices_2 = self.asset_2["Close"].iloc[-int(T / self.dt):].values
-        historical_prices_3 = self.asset_3["Close"].iloc[-int(T / self.dt):].values
-        historical_prices = np.column_stack([historical_prices_1, historical_prices_2, historical_prices_3])
+    def plot_backtest_results(self, simulated_data, historical_prices, mse):
         p, m, M = simulated_data.shape  # number of assets, time steps, number of paths
         
-        initial_values = simulated_data[:, 0, 0]  # Taking the first value of each asset (first time step, first path)
-        threshold_values = 0.59 * initial_values
         # Create subplots for each asset
         fig, axes = plt.subplots(p, 1, figsize=(10, 5 * p), dpi=80, sharex=True)
         
@@ -178,7 +247,10 @@ class MultiBS:
             # Plot the actual historical price path for asset i
             ax.plot(historical_prices[:, i], color='red', label="Actual Price")
             ax.annotate(f'MSE: {mse[i]:.4f}', xy=(0.95, 0.95), xycoords='axes fraction', horizontalalignment='right', verticalalignment='top', fontsize=12)
-            ax.axhline(y=threshold_values[i], color='red', linestyle='--', label='59% of Initial Value')
+            ax.axhline(y=self.barrier[i], color='red', linestyle='--', label='59% of Initial Value')
+            ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
+                    xytext=(-30, 0), textcoords='offset points',
+                    color='red', fontsize=10, va='center', ha='right')
             ax.set_title(f'Backtest Results for Asset {i+1}')
             ax.set_xlabel('Time Steps')
             ax.set_ylabel('Price')
