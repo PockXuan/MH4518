@@ -21,9 +21,9 @@ def preprocess_stock_data(df):
 def load_data():
     """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
     # Load stock data
-    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH.csv"))
-    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE.csv"))
-    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK.csv"))
+    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/UNH.csv"))
+    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/PFE.csv"))
+    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/MRK.csv"))
 
     # Rename columns for clarity
     df1.columns = ['Date', 'stock_price_UNH']
@@ -34,7 +34,7 @@ def load_data():
     stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
 
     # Load and preprocess interest rates
-    rates = pd.read_csv(os.getcwd() + "/MH4518/datasets/DGS10.csv").replace('.', np.nan).ffill()
+    rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
     rates.columns = ['Date', 'true_rate']
     rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
     rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
@@ -176,7 +176,7 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
         d_t = np.diag(np.sqrt(univariate_vars[i,:] / 100))
         h_t = d_t @ q_star_t @ q_t @ q_star_t @ d_t
         next_shock = np.linalg.cholesky(h_t) @ a_t
-        next_stock_price = np.clip(forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt) / 100), 0, None)
+        next_stock_price = np.clip(forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt) / 10), 0, None)
         forecast = np.concatenate((forecast, next_stock_price.reshape(num_paths,3,1)), axis=2)
         
         q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
@@ -195,7 +195,7 @@ class GARCH():
             self.data[f'simple_return_shock_{stock}'] = (
                 (self.data[f'stock_price_{stock}'] - self.data[f'stock_price_{stock}'].shift(1) * (1 + self.data['true_rate'] * dt)) / (self.data[f'stock_price_{stock}'].shift(1) * np.sqrt(dt))
                 )
-        self.shocks = self.data[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().iloc[1:]
+        self.shocks = self.data[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().iloc[1:self.current_date]
     
     def fit(self, verbose=False):
 
@@ -240,13 +240,33 @@ if __name__=='__main__':
     model.fit(True)
     forecast = model.forecast(250, 1000)
 
-    data = load_data().loc[412:,[f'stock_price_UNH']]
+    data = load_data().loc[411:,[f'stock_price_UNH']]
     data = np.array(data)
 
     # print(forecast.shape)
     # print(simul.shape)
 
     import matplotlib.pyplot as plt
-    plt.plot(np.log(forecast[:,0,:].T), color='blue', alpha=0.3)
-    plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    # plt.plot(np.log(forecast[:,0,:].T), color='blue', alpha=0.3)
+    # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    plt.plot(forecast[:,0,:].T, color='blue', alpha=0.3)
+    plt.plot(data[:250,0], color='red', label="Actual Price")
+    plt.show()
+
+    data = load_data().loc[412:,[f'stock_price_PFE']]
+    data = np.array(data)
+
+    # plt.plot(np.log(forecast[:,1,:].T), color='blue', alpha=0.3)
+    # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    plt.plot(forecast[:,1,:].T, color='blue', alpha=0.3)
+    plt.plot(data[:250,0], color='red', label="Actual Price")
+    plt.show()
+
+    data = load_data().loc[412:,[f'stock_price_MRK']]
+    data = np.array(data)
+
+    # plt.plot(np.log(forecast[:,2,:].T), color='blue', alpha=0.3)
+    # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    plt.plot(forecast[:,2,:].T, color='blue', alpha=0.3)
+    plt.plot(data[:250,0], color='red', label="Actual Price")
     plt.show()

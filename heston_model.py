@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from tqdm import tqdm
+import os
+import pandas as pd
 
 torch.set_default_dtype(torch.float64)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -18,6 +20,7 @@ x128 = [0.0122236989606157641980521,0.0366637909687334933302153,0.06108196960413
 w128 = [0.0244461801962625182113259,0.0244315690978500450548486,0.0244023556338495820932980,0.0243585572646906258532685,0.0243002001679718653234426,0.0242273192228152481200933,0.0241399579890192849977167,0.0240381686810240526375873,0.0239220121367034556724504,0.0237915577810034006387807,0.0236468835844476151436514,0.0234880760165359131530253,0.0233152299940627601224157,0.0231284488243870278792979,0.0229278441436868469204110,0.0227135358502364613097126,0.0224856520327449668718246,0.0222443288937997651046291,0.0219897106684604914341221,0.0217219495380520753752610,0.0214412055392084601371119,0.0211476464682213485370195,0.0208414477807511491135839,0.0205227924869600694322850,0.0201918710421300411806732,0.0198488812328308622199444,0.0194940280587066028230219,0.0191275236099509454865185,0.0187495869405447086509195,0.0183604439373313432212893,0.0179603271850086859401969,0.0175494758271177046487069,0.0171281354231113768306810,0.0166965578015892045890915,0.0162550009097851870516575,0.0158037286593993468589656,0.0153430107688651440859909,0.0148731226021473142523855,0.0143943450041668461768239,0.0139069641329519852442880,0.0134112712886163323144890,0.0129075627392673472204428,0.0123961395439509229688217,0.0118773073727402795758911,0.0113513763240804166932817,0.0108186607395030762476596,0.0102794790158321571332153,0.0097341534150068058635483,0.0091830098716608743344787,0.0086263777986167497049788,0.0080645898904860579729286,0.0074979819256347286876720,0.0069268925668988135634267,0.0063516631617071887872143,0.0057726375428656985893346,0.0051901618326763302050708,0.0046045842567029551182905,0.0040162549837386423131943,0.0034255260409102157743378,0.0028327514714579910952857,0.0022382884309626187436221,0.0016425030186690295387909,0.0010458126793403487793129,0.0004493809602920903763943]
 
 standard_normal = torch.distributions.Normal(torch.tensor([0]).to(device), torch.tensor([1]).to(device))
+dt = 1/250
 
 
 class HestonModel:
@@ -182,6 +185,108 @@ class HestonModel:
         KT_price = KT_price.to(device).reshape(-1,3)
         
         return self.levmarq(KT_price, S0, rate)
+
+    def MLE(self, starting_date=0):
+
+        starting_date += 411
+
+        def preprocess_stock_data(df):
+            """Convert dates, calculate Garman-Klass variance, and take log of stock prices."""
+            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None).dt.date
+            return df[['Date', 'Open', 'High', 'Low', 'Close', 'log_return']]
+
+        """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
+        # Load stock data
+        df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/UNH.csv"))
+        df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/PFE.csv"))
+        df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/MRK.csv"))
+
+        # Rename columns for clarity
+        df1.columns = ['Date', 'Open_UNH', 'High_UNH', 'Low_UNH', 'Close_UNH', 'log_return_UNH']
+        df2.columns = ['Date', 'Open_PFE', 'High_PFE', 'Low_PFE', 'Close_PFE', 'log_return_PFE']
+        df3.columns = ['Date', 'Open_MRK', 'High_MRK', 'Low_MRK', 'Close_MRK', 'log_return_MRK']
+
+        # Merge stock data by Date
+        stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
+
+        # Load and preprocess interest rates
+        rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
+        rates.columns = ['Date', 'true_rate']
+        rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
+        rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
+
+        # Merge stock and rate data
+        stock_df = stock_df.merge(rates, on='Date')
+        
+        # CEKF estimate of volatiltiy
+
+        # First 20 data points used to estimate V_0
+        v0 = stock_df.iloc[:20]
+        v0['overnight_temp_UNH'] = np.log(stock_df['Open_UNH'] / stock_df['Close_UNH'].shift(1))
+        v0['overnight_temp_PFE'] = np.log(stock_df['Open_PFE'] / stock_df['Close_PFE'].shift(1))
+        v0['overnight_temp_MRK'] = np.log(stock_df['Open_MRK'] / stock_df['Close_MRK'].shift(1))
+
+        v0['overnight_UNH'] = (v0['overnight_temp_UNH'] - v0['overnight_temp_UNH'].mean())**2
+        v0['overnight_PFE'] = (v0['overnight_temp_PFE'] - v0['overnight_temp_PFE'].mean())**2
+        v0['overnight_MRK'] = (v0['overnight_temp_MRK'] - v0['overnight_temp_MRK'].mean())**2
+        
+        v0['open_close_temp_UNH'] = np.log(stock_df['Close_UNH'] / stock_df['Open_UNH'])
+        v0['open_close_temp_PFE'] = np.log(stock_df['Close_PFE'] / stock_df['Open_PFE'])
+        v0['open_close_temp_MRK'] = np.log(stock_df['Close_MRK'] / stock_df['Open_MRK'])
+
+        v0['open_close_UNH'] = (v0['open_close_temp_UNH'] - v0['open_close_temp_UNH'].mean())**2
+        v0['open_close_PFE'] = (v0['open_close_temp_PFE'] - v0['open_close_temp_PFE'].mean())**2
+        v0['open_close_MRK'] = (v0['open_close_temp_MRK'] - v0['open_close_temp_MRK'].mean())**2
+
+        v0['rs_var_UNH'] = np.log(stock_df['High_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['High_UNH'] / stock_df['Close_UNH']) + np.log(stock_df['Low_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['Low_UNH'] / stock_df['Close_UNH'])
+        v0['rs_var_PFE'] = np.log(stock_df['High_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['High_PFE'] / stock_df['Close_PFE']) + np.log(stock_df['Low_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['Low_PFE'] / stock_df['Close_PFE'])
+        v0['rs_var_MRK'] = np.log(stock_df['High_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['High_MRK'] / stock_df['Close_MRK']) + np.log(stock_df['Low_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['Low_MRK'] / stock_df['Close_MRK'])
+
+        k = 0.5
+        v0_UNH = np.sqrt(v0['overnight_UNH'].mean() + k * v0['open_close_UNH'].mean() + (1 - k) * np.sqrt(v0['rs_var_UNH'].mean()))
+        v0_PFE = np.sqrt(v0['overnight_PFE'].mean() + k * v0['open_close_PFE'].mean() + (1 - k) * np.sqrt(v0['rs_var_PFE'].mean()))
+        v0_MRK = np.sqrt(v0['overnight_MRK'].mean() + k * v0['open_close_MRK'].mean() + (1 - k) * np.sqrt(v0['rs_var_MRK'].mean()))
+
+        # Initialise and propagate CEKF
+        # x0 represents volatility, y0 represents shocks of log return
+        x0 = torch.tensor([v0_UNH, v0_PFE, v0_MRK]).reshape(-1,1)
+        y0 = stock_df.loc[19,[f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']]] - (stock_df.loc[19,['true_rate']] - x0**2 / 2) * dt
+
+        # Clean CEKF data
+        cekf_data = stock_df.loc[19:starting_date, [f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']]]
+
+        def f(x, w):
+            next_x = x + 
+
+    def cekf_loss(self, data, x0, y0):
+
+        kappa_k = 5 * torch.ones(5, dtype=torch.float64)
+        sigma_k = 0.30470 * torch.ones(5, dtype=torch.float64)
+        theta_k = 0.0055 * torch.ones(5, dtype=torch.float64)
+        rho_k = -0.2940 * torch.ones(5, dtype=torch.float64)
+        qk = torch.zeros(6,6)
+        rk = torch.zeros(6,6)
+        pk = torch.eye(6)
+
+        steps = len(data.index)
+        predicted_vols = torch.empty((3,0))
+
+        fk = torch.diag(1 - kappa_k * dt)
+        lk = torch.stack((torch.zeros((3,3)), torch.diag(sigma_k * torch.sqrt(x0 * dt))), dim=2).flatten().reshape(3,6)
+        hk = -0.5 * dt
+        mk = torch.empty(3,3)
+        xk = x0
+        yk = y0
+        
+        for k in range(steps):
+            
+            dqk_temp = torch.diag(qk)[::2]
+            dqk = pk * torch.max((1 - kappa_k * dt)**2) + dt**2 * torch.max((kappa_k * theta_k)**2) + torch.max(sigma_k**2) * dt * torch.diag(xk) * 
+
+            xk_temp = xk + kappa_k * (theta_k - xk) * dt
+            pk_temp = fk @ pk @ fk.T + lk @ qk @ lk.T + dqk
+
+
 
     def single_asset_path(self, u, uni, params, r, S0=1, dt=1/250, psic=1.5, gamma1=0.5, gamma2=0.5, verbose=False):
         
