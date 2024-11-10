@@ -233,24 +233,18 @@ model = GARCH()
 model.fit()
 
 thing = CallablePayoff(0, 0.419, [480.22924805, 34.61804962, 107.69082642])
+
+epochs = 400
+with tqdm(total=epochs, desc="Training Progress") as pbar:
+    for epoch in range(epochs):
+        path = model.forecast(317, 256)
+        path = path[(path>0).all(axis=2).all(axis=1)]
+        losses = thing.minimise_over_path(np.log(path))
+        
+        pbar.set_postfix({'Worst loss': max(losses), 
+                            'Best Loss': min(losses)})
+        pbar.update(1)
+
 path = model.forecast(317, 256)
 path = path[(path>0).all(axis=2).all(axis=1)]
-
-import matplotlib.pyplot as plt
-plt.plot(np.log(path[:,0,:].T), color='blue', alpha=0.3)
-plt.show()
-
-# epochs = 400
-# with tqdm(total=epochs, desc="Training Progress") as pbar:
-#     for epoch in range(epochs):
-#         path = model.forecast(317, 256)
-#         path = path[(path>0).all(axis=2).all(axis=1)]
-#         losses = thing.minimise_over_path(np.log(path))
-        
-#         pbar.set_postfix({'Worst loss': max(losses), 
-#                             'Best Loss': min(losses)})
-#         pbar.update(1)
-
-# path = model.forecast(317, 256)
-# path = path[(path>0).all(axis=2).all(axis=1)]
-# print(thing.evaluate_payoff(path))
+print(thing.evaluate_payoff(path))
