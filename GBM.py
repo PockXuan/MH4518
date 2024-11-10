@@ -96,6 +96,7 @@ class MultiBS:
             S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
         return S
     
+
     # Simulation function for Geometric Brownian Motion (GBM)
     def simulate_multi_GBM_antithetic(self, T, M=10_000, S0=None):
         
@@ -149,6 +150,7 @@ class MultiBS:
         
         return S.transpose(1,2,0)
     
+
     # Calibrate using simulated forward data
     def calibrate_model(self, simulated_data):
         # Convert simulated data to log returns
@@ -171,6 +173,7 @@ class MultiBS:
 
         return self.v, self.Sigma
     
+
     def plot(self, simulated_data):
         if simulated_data is None:
             raise ValueError('No simulated data available. Run the simulation first.')
@@ -194,6 +197,7 @@ class MultiBS:
         
         plt.tight_layout()
         plt.show()
+   
     
     def backtest(self, M=10_000, start_date="2023-08-23", end_date="2024-08-01"):
         if start_date is None:
