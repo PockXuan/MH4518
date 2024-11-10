@@ -302,34 +302,51 @@ class MultiBS:
         return path
 
     # Calculate Delta using finite difference method
-    def calculate_delta(self, T=1, M=10_000, h=0.01):
-        S0 = np.array([self.asset_1["Close"].iloc[int(-T/self.dt)],
-                       self.asset_2["Close"].iloc[int(-T/self.dt)],
-                       self.asset_3["Close"].iloc[int(-T/self.dt)]])
+    def calculate_delta(self, pay_off, T=1, M=10_000, h=0.01, S0=None):
+        # Initial asset prices at the start time T
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[int(-T/self.dt)],
+                        self.asset_2["Close"].iloc[int(-T/self.dt)],
+                        self.asset_3["Close"].iloc[int(-T/self.dt)]])
 
-        S0_plus = S0.copy()
-        S0_minus = S0.copy()
-        
-        # Perturb the asset price
-        S0_plus *= (1 + h)
-        S0_minus *= (1 + h)
-        V_S_plus = self.simulate_multi_GBM_exact(T, M, S0_plus)[:, -1, :].mean(axis=1)
-        V_S_minus = self.simulate_multi_GBM_exact(T, M, S0_minus)[:, -1, :].mean(axis=1)
-        
-        # Calculate Delta for each asset
-        delta = (V_S_plus - V_S_minus) / (2 * S0 * h)
+        # Initialize delta array
+        delta = np.zeros_like(S0)
+
+        # Loop over each asset to compute individual deltas
+        for i in range(len(S0)):
+            # Create perturbed asset price arrays for plus and minus perturbations
+            S0_plus = S0.copy()
+            S0_minus = S0.copy()
+            
+            # Perturb the current asset
+            S0_plus[i] *= (1 + h)
+            S0_minus[i] *= (1 - h)
+            
+            # Simulate final values with perturbed prices
+            V_S_plus = self.simulate_multi_GBM_exact(T, M, S0_plus)
+            V_S_minus = self.simulate_multi_GBM_exact(T, M, S0_minus)
+            
+            # Evaluate the payoff for perturbed values
+            pay_off_plus = pay_off.evaluate_payoff(np.log(V_S_plus).transpose(2, 0, 1), True)
+            pay_off_minus = pay_off.evaluate_payoff(np.log(V_S_minus).transpose(2, 0, 1), True)
+            expected_pay_off_plus = pay_off_plus.mean()
+            expected_pay_off_minus = pay_off_minus.mean()
+            # Calculate delta for the current asset
+            delta[i] = (expected_pay_off_plus - expected_pay_off_minus) / (2 * S0[i] * h)
+
         return delta
+
     
-    def calculate_gamma(self, T=1, M=10_000, h=0.01):
-        S0 = np.array([self.asset_1["Close"].iloc[int(-T / self.dt)],
-                    self.asset_2["Close"].iloc[int(-T / self.dt)],
-                    self.asset_3["Close"].iloc[int(-T / self.dt)]])
+    def calculate_gamma(self, pay_off, T=1, M=10_000, h=0.01, S0=None):
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[int(-T / self.dt)],
+                        self.asset_2["Close"].iloc[int(-T / self.dt)],
+                        self.asset_3["Close"].iloc[int(-T / self.dt)]])
         p = len(S0)
         gamma = np.zeros((p, p))
 
         # Scale the perturbation size by the underlying prices
         h_scaled = h * S0
-
         
         # Calculate Gamma for each pair of assets using the new formula
         for i in range(p):
@@ -354,12 +371,18 @@ class MultiBS:
                 S0_ij_mm[j] -= h_scaled[j]
 
                 # Simulate option values with perturbed prices (using final time step)
-                V_S_ij_pp = self.simulate_multi_GBM_exact(T, M, S0_ij_pp).mean(axis=2)[:, -1]
-                V_S_ij_pm = self.simulate_multi_GBM_exact(T, M, S0_ij_pm).mean(axis=2)[:, -1]
-                V_S_ij_mp = self.simulate_multi_GBM_exact(T, M, S0_ij_mp).mean(axis=2)[:, -1]
-                V_S_ij_mm = self.simulate_multi_GBM_exact(T, M, S0_ij_mm).mean(axis=2)[:, -1]
+                V_S_ij_pp = self.simulate_multi_GBM_exact(T, M, S0_ij_pp)
+                V_S_ij_pm = self.simulate_multi_GBM_exact(T, M, S0_ij_pm)
+                V_S_ij_mp = self.simulate_multi_GBM_exact(T, M, S0_ij_mp)
+                V_S_ij_mm = self.simulate_multi_GBM_exact(T, M, S0_ij_mm)
+
+                # Apply the payoff evaluation to each simulated value with log-transformation
+                pay_off_ij_pp = pay_off.evaluate_payoff(np.log(V_S_ij_pp).transpose(2, 0, 1), True).mean()
+                pay_off_ij_pm = pay_off.evaluate_payoff(np.log(V_S_ij_pm).transpose(2, 0, 1), True).mean()
+                pay_off_ij_mp = pay_off.evaluate_payoff(np.log(V_S_ij_mp).transpose(2, 0, 1), True).mean()
+                pay_off_ij_mm = pay_off.evaluate_payoff(np.log(V_S_ij_mm).transpose(2, 0, 1), True).mean()
 
                 # Calculate Gamma using the central finite difference formula
-                gamma[i, j] = (V_S_ij_pp[i] - V_S_ij_pm[i] - V_S_ij_mp[i] + V_S_ij_mm[i]) / (4 * h_scaled[i] * h_scaled[j])
+                gamma[i, j] = (pay_off_ij_pp - pay_off_ij_pm - pay_off_ij_mp + pay_off_ij_mm) / (4 * h_scaled[i] * h_scaled[j])
 
         return gamma
