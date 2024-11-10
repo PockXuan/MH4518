@@ -72,18 +72,18 @@ class CallablePayoff():
         log_stock_change = path - self.S0.reshape(1,3,1)
         barrier_hit = torch.cummax(log_stock_change < np.log(0.59), dim=2)[0].any(dim=1)
         closed_below_initial = (log_stock_change[:,:,0] < 0).any(dim=1).reshape(num_paths,1)
-        final_smallest_log_stock_price_idx = torch.min(log_stock_change[:,:,-1], dim=1, keepdim=True)
+        final_smallest_log_stock_price_idx = torch.argmin(log_stock_change[:,:,-1], dim=1, keepdim=True)
         input = torch.cat((path, barrier_hit.reshape(num_paths,1,num_timesteps)), dim=1)
         
         worst_case_payoff = torch.where(
             final_smallest_log_stock_price_idx==0,
-            1000 / UHG_ratio,
+            1000 / UHG_ratio * path[:,0,-1].reshape(-1,1),
             torch.where(
                 final_smallest_log_stock_price_idx==1,
-                1000 / Pfizer_ratio,
-                1000 / MC_ratio
+                1000 / Pfizer_ratio * path[:,1,-1].reshape(-1,1),
+                1000 / MC_ratio * path[:,2,-1].reshape(-1,1)
             )
-        ) * torch.exp(path[torch.min(path[:,:,-1], dim=1, keepdim=True)])
+        ) * np.exp(-self.r * self.final_fixing_date / 250)
         
         payoff_at_maturity = torch.where(
             torch.logical_and(barrier_hit[:,-1].reshape(-1,1), closed_below_initial),
@@ -151,18 +151,18 @@ class CallablePayoff():
         log_stock_change = paths - self.S0.reshape(1,3,1)
         barrier_hit = torch.cummax(log_stock_change < np.log(0.59), dim=2)[0].any(dim=1)
         closed_below_initial = (log_stock_change[:,:,0] < 0).any(dim=1).reshape(num_paths,1)
-        final_smallest_log_stock_price_idx = torch.min(log_stock_change[:,:,-1], dim=1, keepdim=True)
+        final_smallest_log_stock_price_idx = torch.argmin(log_stock_change[:,:,-1], dim=1, keepdim=True)
         input = torch.cat((paths, barrier_hit.reshape(num_paths,1,num_timesteps)), dim=1)
         
         worst_case_payoff = torch.where(
             final_smallest_log_stock_price_idx==0,
-            1000 / UHG_ratio,
+            1000 / UHG_ratio * paths[:,0,-1].reshape(-1,1),
             torch.where(
                 final_smallest_log_stock_price_idx==1,
-                1000 / Pfizer_ratio,
-                1000 / MC_ratio
+                1000 / Pfizer_ratio * paths[:,1,-1].reshape(-1,1),
+                1000 / MC_ratio * paths[:,2,-1].reshape(-1,1)
             )
-        ) * torch.exp(paths[torch.min(paths[:,:,-1], dim=1, keepdim=True)])
+        ) * np.exp(-self.r * self.final_fixing_date / 250)
         
         payoff_at_maturity = torch.where(
             torch.logical_and(barrier_hit[:,-1], closed_below_initial),
@@ -233,18 +233,24 @@ model = GARCH()
 model.fit()
 
 thing = CallablePayoff(0, 0.419, [480.22924805, 34.61804962, 107.69082642])
-
-epochs = 400
-with tqdm(total=epochs, desc="Training Progress") as pbar:
-    for epoch in range(epochs):
-        path = model.forecast(317, 256)
-        path = path[(path>0).all(axis=2).all(axis=1)]
-        losses = thing.minimise_over_path(np.log(path))
-        
-        pbar.set_postfix({'Worst loss': max(losses), 
-                            'Best Loss': min(losses)})
-        pbar.update(1)
-
 path = model.forecast(317, 256)
 path = path[(path>0).all(axis=2).all(axis=1)]
-print(thing.evaluate_payoff(path))
+
+import matplotlib.pyplot as plt
+plt.plot(np.log(path[:,0,:].T), color='blue', alpha=0.3)
+plt.show()
+
+# epochs = 400
+# with tqdm(total=epochs, desc="Training Progress") as pbar:
+#     for epoch in range(epochs):
+#         path = model.forecast(317, 256)
+#         path = path[(path>0).all(axis=2).all(axis=1)]
+#         losses = thing.minimise_over_path(np.log(path))
+        
+#         pbar.set_postfix({'Worst loss': max(losses), 
+#                             'Best Loss': min(losses)})
+#         pbar.update(1)
+
+# path = model.forecast(317, 256)
+# path = path[(path>0).all(axis=2).all(axis=1)]
+# print(thing.evaluate_payoff(path))
