@@ -56,7 +56,7 @@ class CallablePayoff():
         else:
             print("No future calls available. Product is now European.")
     
-    def evaluate_payoff(self, path):
+    def evaluate_payoff(self, path, callable=True):
 
         # Path index of log payoff is in (path #, asset #, timestep #)
 
@@ -85,12 +85,27 @@ class CallablePayoff():
             )
         ) * np.exp(-self.r * self.final_fixing_date / 250)
         
+        print(worst_case_payoff)
+        
         payoff_at_maturity = torch.where(
             torch.logical_and(barrier_hit[:,-1].reshape(-1,1), closed_below_initial),
             worst_case_payoff,
             1000
         ) * np.exp(-self.r * self.final_fixing_date / 250)
-
+        
+        if callable:
+            return self.callable_payoff(input, payoff_at_maturity)
+        
+        coupon_payment = np.exp(-self.r * self.payoff_dates[-1] / 250) + np.exp(-self.r * self.payoff_dates[-2] / 250)
+        if self.current_date <= self.payoff_dates[-3]: coupon_payment +=np.exp(-self.r * self.payoff_dates[-3] / 250)
+        if self.current_date <= self.payoff_dates[-4]: coupon_payment +=np.exp(-self.r * self.payoff_dates[-4] / 250)
+        if self.current_date <= self.payoff_dates[-5]: coupon_payment +=np.exp(-self.r * self.payoff_dates[-5] / 250)
+        coupon_payment *= 0.1025 / 4
+        
+        return payoff_at_maturity + coupon_payment
+    
+    def callable_payoff(self, input, payoff_at_maturity):
+        
         input_at_latest_call = input[:,:,self.calling_dates[-1] - self.current_date]
         coupon_payment_after_latest_call = 0.1025 / 4 * (np.exp(-self.r * self.payoff_dates[-1] / 250) + np.exp(-self.r * self.payoff_dates[-2] / 250))
         unexercised_payoff_at_latest_call = payoff_at_maturity * np.exp(-self.r * self.final_fixing_date)
@@ -100,7 +115,7 @@ class CallablePayoff():
             unexercised_payoff_at_latest_call,
             call_revenue
         )
-
+        
         if self.current_date > 193:
             return payoff_at_latest_call
         elif self.current_date > 189:
@@ -234,17 +249,20 @@ model.fit()
 
 thing = CallablePayoff(0, 0.419, [480.22924805, 34.61804962, 107.69082642])
 
-epochs = 400
-with tqdm(total=epochs, desc="Training Progress") as pbar:
-    for epoch in range(epochs):
-        path = model.forecast(317, 256)
-        path = path[(path>0).all(axis=2).all(axis=1)]
-        losses = thing.minimise_over_path(np.log(path))
+# epochs = 400
+# with tqdm(total=epochs, desc="Training Progress") as pbar:
+#     for epoch in range(epochs):
+#         path = model.forecast(317, 256)
+#         path = path[(path>0).all(axis=2).all(axis=1)]
+#         losses = thing.minimise_over_path(np.log(path))
         
-        pbar.set_postfix({'Worst loss': max(losses), 
-                            'Best Loss': min(losses)})
-        pbar.update(1)
+#         pbar.set_postfix({'Worst loss': max(losses), 
+#                             'Best Loss': min(losses)})
+#         pbar.update(1)
 
+s0 = torch.tensor([480.22924805, 34.61804962, 107.69082642])
 path = model.forecast(317, 256)
 path = path[(path>0).all(axis=2).all(axis=1)]
-print(thing.evaluate_payoff(path))
+torch.set_printoptions(profile="full")
+print(torch.cat((thing.evaluate_payoff(path, False), torch.tensor(path[:,:,-1]) - torch.log(s0).reshape(1,3,1), (torch.tensor(path) < (np.log(0.59) + torch.log(s0).reshape(1,3,1))).any(dim=2).any(dim=1).reshape(-1,1)), dim=1))
+torch.set_printoptions(profile="default") # reset
