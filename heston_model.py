@@ -254,7 +254,8 @@ class HestonModel:
         data = data.iloc[40:]
         
         # [v0,theta,rho,kappa,sigma]
-        # Since all kappa are negative we estimate that separately
+        # Since all kappa are negative we estimate those separately, using eqn 22 of Dimitroff et al. (2011)
+        # A Parsimonious Multi-Asset Heston Model: Calibration and Derivative Pricing
         kappa_UNH = ((dt * (len(data) - 1))**-1 * data['log_return_UNH']**2).sum()
         theta_UNH, sigma_UNH = self.get_params(data, kappa_UNH, 'UNH')
         theta_UNH, sigma_UNH = self.minimise(theta_UNH, kappa_UNH, sigma_UNH, data, 'UNH')
@@ -670,6 +671,8 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
     
+    s0 = torch.tensor([489.44, 36.65, 111])
+    
     # S0 = 1000
     # r = 0.04
     # params = calibration_test(S0, r)
@@ -678,7 +681,7 @@ if __name__ == "__main__":
     
     model = HestonModel()
     params, cov = model.MLE()
-    paths = model.multi_asset_path(torch.randn(256,3,250,2), torch.rand(256,3,250,2), params, 0.04, cov, verbose=True)
+    paths = model.multi_asset_path(torch.randn(256,3,250,2), torch.rand(256,3,250,2), params, 0.04, cov, s0, verbose=True)
     
     plt.plot(paths[:,0,:,0].T.detach().numpy())
     plt.title("Log price")
