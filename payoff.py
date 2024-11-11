@@ -19,9 +19,12 @@ class LSUnit(nn.Module):
         super(LSUnit, self).__init__()
         
         # Input is (asset, stock_price, vol, barrier_breached).flatten() tuple, where barrier_breached is boolean
-        self.hidden1 = nn.Linear(4, 16)
-        self.hidden2 = nn.Linear(16, 16)  
-        self.output = nn.Linear(16, 1)
+        self.hidden1 = nn.Linear(4, 32)
+        self.hidden2 = nn.Linear(32, 32) 
+        self.hidden4 = nn.Linear(32, 4) 
+        self.hidden5 = nn.Linear(4, 32) 
+        self.hidden6 = nn.Linear(32, 32)  
+        self.output = nn.Linear(32, 1)
     
     def forward(self, x):
         
