@@ -457,28 +457,30 @@ class HestonModel:
         
         num_paths, num_assets, num_timesteps, _ = u.shape
         u = u.to(torch.float64)
+        uni = uni.to(device)
+        u = u.to(device)
         
         rho_arr = params[:,2].reshape(-1,1)
         s1 = torch.cat((torch.sqrt(1-rho_arr**2), rho_arr), dim=1)
         s2 = torch.cat((torch.zeros_like(rho_arr), torch.ones_like(rho_arr)), dim=1)
         Q_inv = torch.block_diag(*torch.stack((s1,s2), dim=1)).to(device)
-        R = torch.linalg.cholesky(corr)
+        R = torch.linalg.cholesky(corr).to(device)
         decorrelator = Q_inv @ R
-        u = u.transpose(1,2).reshape(num_paths, num_timesteps, -1, 1) # So that last 2 dimensions is a column vector of normal variables
+        u = u.transpose(1,2).reshape(num_paths, num_timesteps, -1, 1).to(device) # So that last 2 dimensions is a column vector of normal variables
         u = decorrelator @ u
         u = u.reshape(num_paths, num_timesteps, num_assets, 2).transpose(1,2)
         
-        v0_arr = params[:,0].reshape(-1)
-        theta_arr = params[:,1].reshape(-1)
-        rho_arr = params[:,2].reshape(-1)
-        kappa_arr = params[:,3].reshape(-1)
-        sigma_arr = params[:,4].reshape(-1)
+        v0_arr = params[:,0].reshape(-1).to(device)
+        theta_arr = params[:,1].reshape(-1).to(device)
+        rho_arr = params[:,2].reshape(-1).to(device)
+        kappa_arr = params[:,3].reshape(-1).to(device)
+        sigma_arr = params[:,4].reshape(-1).to(device)
         
         path = torch.empty((u.shape[0], n, u.shape[2]+1, 2), device=device)
-        path[:,:,0,0] = torch.log(S0).reshape((1,-1)).tile(num_paths, 1)
-        path[:,:,0,1] = v0_arr.reshape((1,-1)).tile(num_paths, 1)
+        path[:,:,0,0] = torch.log(S0).reshape((1,-1)).tile(num_paths, 1).to(device)
+        path[:,:,0,1] = v0_arr.reshape((1,-1)).tile(num_paths, 1).to(device)
         
-        exp = torch.exp(-kappa_arr * dt)
+        exp = torch.exp(-kappa_arr * dt).to(device)
         v1 = sigma_arr**2 * exp * (1 - exp) / kappa_arr
         v2 = theta_arr * sigma_arr**2 * (1 - exp)**2 / 2 / kappa_arr
         v3 = exp
@@ -512,7 +514,7 @@ class HestonModel:
                                               a * (torch.sqrt(b2) + u[:,:,i,1])**2, \
                                               torch.where(uni[:,:,i,1] <= p, \
                                                           0, \
-                                                          torch.log((1 - p) / (1 - uni[:,:,i,1])) / beta))
+                                                          torch.log((1 - p) / (1 - uni[:,:,i,1])) / beta).to(device))
                 
                 # log stock price update
                 x0 = torch.where(psi <= psic,

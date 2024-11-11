@@ -62,7 +62,7 @@ gamma = torch.empty((3,3))
 for i in range(3):
     for j in range(3):
         
-        uni = sobol.draw(50000).reshape(50000,3,-1,2)
+        uni = sobol.draw(   ).reshape(50000,3,-1,2)
         av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
         uni = torch.cat((uni, av), dim=0)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
