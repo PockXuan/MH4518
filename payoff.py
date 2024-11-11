@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from heston_model import HestonModel
+# from heston_model import HestonModel
 from tqdm import tqdm
 import os
 
@@ -86,7 +86,7 @@ class CallablePayoff():
             1000
         ) * np.exp(-self.r * self.final_fixing_date / 250)
         
-        if callable:
+        if callable and self.current_date < 254:
             return self.callable_payoff(input, payoff_at_maturity)
         
         coupon_payment = np.exp(-self.r * self.payoff_dates[-1] / 250) + np.exp(-self.r * self.payoff_dates[-2] / 250)
@@ -99,7 +99,7 @@ class CallablePayoff():
     
     def callable_payoff(self, input, payoff_at_maturity):
         
-        input_at_latest_call = input[:,:,self.calling_dates[-1] - self.current_date]
+        input_at_latest_call = input[:,:,self.calling_dates[-1] - self.current_date - 1]
         coupon_payment_after_latest_call = 0.1025 / 4 * (np.exp(-self.r * self.payoff_dates[-1] / 250) + np.exp(-self.r * self.payoff_dates[-2] / 250))
         call_revenue = 1000 * np.exp(-self.r * self.calling_dates[-1] / 250) # Value of exercising
         payoff_at_latest_call = torch.where(

@@ -27,17 +27,8 @@ def parameterEstimationWithTicker(ticker: str, start: str, end: str) -> tuple[fl
 
 
 def calculate_var_cvar(returns, confidence_level=0.95):
-    # Calculate the mean and standard deviation of returns
-    mu = np.mean(returns)
-    sigma = np.std(returns)
-
-    # Calculate the Z-score for the given confidence level
-    z_score = norm.ppf(1 - confidence_level)
-
-    # Calculate VaR using the parametric method
-    var = mu + z_score * sigma
-
-    # Calculate CVaR (Expected Shortfall)
-    cvar = mu - sigma * norm.pdf(z_score) / (1 - confidence_level)
-
+    sorted_returns = np.sort(returns)
+    var_index = int((1 - confidence_level) * len(sorted_returns))
+    var = sorted_returns[var_index]
+    cvar = sorted_returns[:var_index].mean()
     return var, cvar

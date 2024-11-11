@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import multivariate_normal, qmc, norm
 import torch
-from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,10 +67,7 @@ class MultiBS:
         self.Sigma = torch.tensor(np.cov(self.log_returns_matrix.T) / self.dt)
 
     # Simulation function for Geometric Brownian Motion (GBM)
-    def simulate_multi_GBM_exact(self, T, M=10_000, S0=None):
-        
-        m = int(T / self.dt)  # number of periods
-
+    def simulate_multi_GBM_exact(self, m, M=10_000, S0=None):
         if S0 is None:
             S0 = np.array([self.asset_1["Close"].iloc[-m], 
                         self.asset_2["Close"].iloc[-m], 
@@ -98,9 +94,7 @@ class MultiBS:
     
 
     # Simulation function for Geometric Brownian Motion (GBM)
-    def simulate_multi_GBM_antithetic(self, T, M=10_000, S0=None):
-        
-        m = int(T / self.dt)  # number of periods
+    def simulate_multi_GBM_antithetic(self, m, M=10_000, S0=None):
         if S0 is None:
             S0 = np.array([self.asset_1["Close"].iloc[-m], 
                         self.asset_2["Close"].iloc[-m], 
@@ -118,11 +112,103 @@ class MultiBS:
             S[:, j, :n] = S[:, j - 1, :n] * np.exp(Z[j - 1, :].T)  # Direct increment of prices from the previous step
             S[:, j, n:] = S[:, j - 1, n:] * np.exp(antithetic_Z[j - 1, :].T)
         return S
+
+
+    # Control Variate Simulation using Simplified GBM
+    def simulate_multi_GBM_control_variate(self, m, M=10_000, S0=None):
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
+        p = len(S0)  # Number of assets
+        S = np.zeros((p, m + 1, M))
+        S[:, 0, :] = S0[:, np.newaxis]
+
+        # Simulate multivariate normal random variables for the complex GBM model
+        Z = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=(m, M))
+
+        # Initialize control variate using simplified GBM with fixed drift and volatility
+        fixed_drift = np.mean(self.v)  # Use the average drift as the control drift
+        fixed_volatility = np.sqrt(np.diag(self.Sigma)).mean()  # Use the average volatility
+
+        control_variate = np.zeros((p, M))
+        for j in range(1, m + 1):
+            # Update the main GBM simulation
+            S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :].T)
+
+            # Analytical solution for the simplified GBM (control variate)
+            dt = self.dt
+            control_variate += S[:, j - 1, :] * (
+                np.exp((fixed_drift - 0.5 * fixed_volatility**2) * dt + fixed_volatility * Z[j - 1, :].T) - 1
+            )
+
+        # Adjust the simulated paths using the control variate
+        control_adjustment = np.mean(control_variate, axis=1)
+        S[:, -1, :] -= control_adjustment[:, np.newaxis]
+
+        return S
+
+    # Stratified Sampling Simulation
+    def simulate_multi_GBM_stratified(self, m, M=10_000, S0=None):
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
+        p = len(S0)
+        S = np.zeros((p, m + 1, M))
+        S[:, 0, :] = S0[:, np.newaxis]
+
+        n_strata = 100
+        strata_bounds = norm.ppf(np.linspace(0, 1, n_strata + 1)[1:-1])
+        # Cholesky decomposition of the covariance matrix
+        L = np.linalg.cholesky(self.Sigma * self.dt)
+
+        # Generate stratified samples for the first timestep (j = 0)
+        Z = np.zeros((m, p, M))
+        for i in range(M):
+            # Select a random stratum
+            stratum = np.random.choice(strata_bounds, size=p)
+            # Generate uncorrelated stratified samples
+            uncorrelated_samples = np.random.normal(loc=self.v * self.dt + stratum, scale=1.0, size=p)
+            # Apply Cholesky transform to introduce correlation
+            Z[0, :, i] = L @ uncorrelated_samples
+
+
+        # Standard multivariate normal sampling for subsequent timesteps (j > 1)
+        for j in range(1, m):
+            Z[j, :, :] = multivariate_normal.rvs(mean=self.v * self.dt, cov=self.Sigma * self.dt, size=M).T
+
+        # Iterate and simulate asset prices
+        for j in range(1, m + 1):
+            S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :, :])
+
+        return S
+
+
+    # Importance Sampling Simulation
+    def simulate_multi_GBM_importance_sampling(self, m, M=10_000, S0=None, shift_factor=1.5):
+        if S0 is None:
+            S0 = np.array([self.asset_1["Close"].iloc[-m], 
+                        self.asset_2["Close"].iloc[-m], 
+                        self.asset_3["Close"].iloc[-m]])
+        p = len(S0)
+        S = np.zeros((p, m + 1, M))
+        S[:, 0, :] = S0[:, np.newaxis]
+
+        # Shift the mean for importance sampling
+        shifted_mean = self.v * self.dt * shift_factor
+        Z = multivariate_normal.rvs(mean=shifted_mean, cov=self.Sigma * self.dt, size=(m, M))
+
+        for j in range(1, m + 1):
+            S[:, j, :] = S[:, j - 1, :] * np.exp(Z[j - 1, :].T)
+
+        # Reweight the samples to account for the shifted mean
+        weights = np.exp(-shift_factor * self.v * self.dt * m).reshape(-1, 1)
+        S[:, -1, :] *= weights
+        return S
+
     
-    
-    def simulate_multi_GBM_quasi(self, T, M=10_000, S0=None):
-        
-        m = int(T / self.dt)  # number of periods
+    def simulate_multi_GBM_quasi(self, m, M=10_000, S0=None):
         if S0 is None:
             S0 = np.array([self.asset_1["Close"].iloc[-m], 
                         self.asset_2["Close"].iloc[-m], 
@@ -174,31 +260,32 @@ class MultiBS:
         return self.v, self.Sigma
     
 
-    def plot(self, simulated_data):
+    def plot(self, simulated_data, show_barrier=True):
         if simulated_data is None:
             raise ValueError('No simulated data available. Run the simulation first.')
         
         p, m, M = simulated_data.shape  # number of assets, time steps, number of paths
 
         # Create subplots for each asset
-        fig, axes = plt.subplots(p, 1, figsize=(10, 5 * p), sharex=True)
+        fig, axes = plt.subplots(p, 1, figsize=(10, 5 * p), dpi=80, sharex=True)
         
         for i in range(p):
             ax = axes[i] if p > 1 else axes  # Select the appropriate axis if p > 1
             # Plot each path for asset i
             ax.plot(simulated_data[i], alpha=0.7)
             ax.set_title(f'Simulated Paths for Asset {i+1}')
-            ax.axhline(y=self.barrier[i], color='red', linestyle='--', label='59% of Initial Value')
-            ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
-                    xytext=(-30, 0), textcoords='offset points',
-                    color='red', fontsize=10, va='center', ha='right')
+            if show_barrier:
+                ax.axhline(y=self.barrier[i], color='red', linestyle='--', label='59% of Initial Value')
+                ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
+                        xytext=(-30, 0), textcoords='offset points',
+                        color='red', fontsize=10, va='center', ha='right')
             ax.set_xlabel('Time Steps')
             ax.set_ylabel('Simulated Price')
         
         plt.tight_layout()
         plt.show()
-   
-    
+
+
     def backtest(self, M=10_000, start_date="2023-08-23", end_date="2024-08-01"):
         if start_date is None:
             raise ValueError("Please provide a valid start date for backtesting.")
@@ -220,7 +307,7 @@ class MultiBS:
         historical_prices = np.column_stack([historical_prices_1, historical_prices_2, historical_prices_3])
 
         # Initial prices for backtest (from start_date)
-        T = (end_index - start_index) * self.dt  # Time horizon for backtesting
+        T = (end_index - start_index)  # Time horizon for backtesting
 
         # Run forward simulation starting from S0
         simulated_data = self.simulate_multi_GBM_exact(T, M, S0=historical_prices[0, :])
@@ -263,6 +350,7 @@ class MultiBS:
         plt.tight_layout()
         plt.show()
 
+
     def multi_asset_path(self, u, uni, params, r, corr, S0=None, dt=1/250, n=3, verbose=False, *args, **kwargs):
         """
         Multi-Asset Path Simulation using Geometric Brownian Motion (GBM).
@@ -301,13 +389,14 @@ class MultiBS:
 
         return path
 
+
     # Calculate Delta using finite difference method
-    def calculate_delta(self, pay_off, T=1, M=10_000, h=0.01, S0=None):
+    def calculate_delta(self, pay_off, m=317, M=10_000, h=0.01, S0=None):
         # Initial asset prices at the start time T
         if S0 is None:
-            S0 = np.array([self.asset_1["Close"].iloc[int(-T/self.dt)],
-                        self.asset_2["Close"].iloc[int(-T/self.dt)],
-                        self.asset_3["Close"].iloc[int(-T/self.dt)]])
+            S0 = np.array([self.asset_1["Close"].iloc[-m],
+                        self.asset_2["Close"].iloc[-m],
+                        self.asset_3["Close"].iloc[-m]])
 
         # Initialize delta array
         delta = np.zeros_like(S0)
@@ -323,8 +412,8 @@ class MultiBS:
             S0_minus[i] *= (1 - h)
             
             # Simulate final values with perturbed prices
-            V_S_plus = self.simulate_multi_GBM_exact(T, M, S0_plus)
-            V_S_minus = self.simulate_multi_GBM_exact(T, M, S0_minus)
+            V_S_plus = self.simulate_multi_GBM_exact(m, M, S0_plus)
+            V_S_minus = self.simulate_multi_GBM_exact(m, M, S0_minus)
             
             # Evaluate the payoff for perturbed values
             pay_off_plus = pay_off.evaluate_payoff(np.log(V_S_plus).transpose(2, 0, 1), True)
@@ -337,11 +426,11 @@ class MultiBS:
         return delta
 
     
-    def calculate_gamma(self, pay_off, T=1, M=10_000, h=0.01, S0=None):
+    def calculate_gamma(self, pay_off, m=317, M=10_000, h=0.01, S0=None):
         if S0 is None:
-            S0 = np.array([self.asset_1["Close"].iloc[int(-T / self.dt)],
-                        self.asset_2["Close"].iloc[int(-T / self.dt)],
-                        self.asset_3["Close"].iloc[int(-T / self.dt)]])
+            S0 = np.array([self.asset_1["Close"].iloc[-m],
+                        self.asset_2["Close"].iloc[-m],
+                        self.asset_3["Close"].iloc[-m]])
         p = len(S0)
         gamma = np.zeros((p, p))
 
@@ -371,10 +460,10 @@ class MultiBS:
                 S0_ij_mm[j] -= h_scaled[j]
 
                 # Simulate option values with perturbed prices (using final time step)
-                V_S_ij_pp = self.simulate_multi_GBM_exact(T, M, S0_ij_pp)
-                V_S_ij_pm = self.simulate_multi_GBM_exact(T, M, S0_ij_pm)
-                V_S_ij_mp = self.simulate_multi_GBM_exact(T, M, S0_ij_mp)
-                V_S_ij_mm = self.simulate_multi_GBM_exact(T, M, S0_ij_mm)
+                V_S_ij_pp = self.simulate_multi_GBM_exact(m, M, S0_ij_pp)
+                V_S_ij_pm = self.simulate_multi_GBM_exact(m, M, S0_ij_pm)
+                V_S_ij_mp = self.simulate_multi_GBM_exact(m, M, S0_ij_mp)
+                V_S_ij_mm = self.simulate_multi_GBM_exact(m, M, S0_ij_mm)
 
                 # Apply the payoff evaluation to each simulated value with log-transformation
                 pay_off_ij_pp = pay_off.evaluate_payoff(np.log(V_S_ij_pp).transpose(2, 0, 1), True).mean()
