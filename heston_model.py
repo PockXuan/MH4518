@@ -3,6 +3,7 @@ import torch
 from tqdm import tqdm
 import os
 import pandas as pd
+from scipy import optimize, special
 
 torch.set_default_dtype(torch.float64)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -207,7 +208,7 @@ class HestonModel:
         df3.columns = ['Date', 'Open_MRK', 'High_MRK', 'Low_MRK', 'Close_MRK', 'log_return_MRK']
 
         # Merge stock data by Date
-        stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
+        stock_df = df1.merge(df2, on='Date').merge(df3, on='Date').iloc[:starting_date]
 
         # Load and preprocess interest rates
         rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
@@ -218,76 +219,143 @@ class HestonModel:
         # Merge stock and rate data
         stock_df = stock_df.merge(rates, on='Date')
         
-        # CEKF estimate of volatiltiy
+        # Reconstruct previous volatility using Yang-Zhang volatility over 20 days
+        # Yang, D., & Zhang, Q. (2000). Drift‐Independent Volatility Estimation Based on High, Low, Open, and Close Prices. The Journal of Business, 73(3), 477–492. https://doi.org/10.1086/209650
+        overnight_temp_UNH = np.log(stock_df['Open_UNH'] / stock_df['Close_UNH'].shift(1))
+        overnight_temp_PFE = np.log(stock_df['Open_PFE'] / stock_df['Close_PFE'].shift(1))
+        overnight_temp_MRK = np.log(stock_df['Open_MRK'] / stock_df['Close_MRK'].shift(1))
 
-        # First 20 data points used to estimate V_0
-        v0 = stock_df.iloc[:20]
-        v0['overnight_temp_UNH'] = np.log(stock_df['Open_UNH'] / stock_df['Close_UNH'].shift(1))
-        v0['overnight_temp_PFE'] = np.log(stock_df['Open_PFE'] / stock_df['Close_PFE'].shift(1))
-        v0['overnight_temp_MRK'] = np.log(stock_df['Open_MRK'] / stock_df['Close_MRK'].shift(1))
-
-        v0['overnight_UNH'] = (v0['overnight_temp_UNH'] - v0['overnight_temp_UNH'].mean())**2
-        v0['overnight_PFE'] = (v0['overnight_temp_PFE'] - v0['overnight_temp_PFE'].mean())**2
-        v0['overnight_MRK'] = (v0['overnight_temp_MRK'] - v0['overnight_temp_MRK'].mean())**2
+        overnight_UNH = (overnight_temp_UNH - overnight_temp_UNH.rolling(window=20).mean())**2
+        overnight_PFE = (overnight_temp_PFE - overnight_temp_PFE.rolling(window=20).mean())**2
+        overnight_MRK = (overnight_temp_MRK - overnight_temp_MRK.rolling(window=20).mean())**2
         
-        v0['open_close_temp_UNH'] = np.log(stock_df['Close_UNH'] / stock_df['Open_UNH'])
-        v0['open_close_temp_PFE'] = np.log(stock_df['Close_PFE'] / stock_df['Open_PFE'])
-        v0['open_close_temp_MRK'] = np.log(stock_df['Close_MRK'] / stock_df['Open_MRK'])
+        open_close_temp_UNH = np.log(stock_df['Close_UNH'] / stock_df['Open_UNH'])
+        open_close_temp_PFE = np.log(stock_df['Close_PFE'] / stock_df['Open_PFE'])
+        open_close_temp_MRK = np.log(stock_df['Close_MRK'] / stock_df['Open_MRK'])
 
-        v0['open_close_UNH'] = (v0['open_close_temp_UNH'] - v0['open_close_temp_UNH'].mean())**2
-        v0['open_close_PFE'] = (v0['open_close_temp_PFE'] - v0['open_close_temp_PFE'].mean())**2
-        v0['open_close_MRK'] = (v0['open_close_temp_MRK'] - v0['open_close_temp_MRK'].mean())**2
+        open_close_UNH = (open_close_temp_UNH - open_close_temp_UNH.rolling(window=20).mean())**2
+        open_close_PFE = (open_close_temp_PFE - open_close_temp_PFE.rolling(window=20).mean())**2
+        open_close_MRK = (open_close_temp_MRK - open_close_temp_MRK.rolling(window=20).mean())**2
 
-        v0['rs_var_UNH'] = np.log(stock_df['High_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['High_UNH'] / stock_df['Close_UNH']) + np.log(stock_df['Low_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['Low_UNH'] / stock_df['Close_UNH'])
-        v0['rs_var_PFE'] = np.log(stock_df['High_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['High_PFE'] / stock_df['Close_PFE']) + np.log(stock_df['Low_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['Low_PFE'] / stock_df['Close_PFE'])
-        v0['rs_var_MRK'] = np.log(stock_df['High_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['High_MRK'] / stock_df['Close_MRK']) + np.log(stock_df['Low_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['Low_MRK'] / stock_df['Close_MRK'])
+        rs_var_UNH = np.log(stock_df['High_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['High_UNH'] / stock_df['Close_UNH']) + np.log(stock_df['Low_UNH'] / stock_df['Open_UNH']) * np.log(stock_df['Low_UNH'] / stock_df['Close_UNH'])
+        rs_var_PFE = np.log(stock_df['High_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['High_PFE'] / stock_df['Close_PFE']) + np.log(stock_df['Low_PFE'] / stock_df['Open_PFE']) * np.log(stock_df['Low_PFE'] / stock_df['Close_PFE'])
+        rs_var_MRK = np.log(stock_df['High_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['High_MRK'] / stock_df['Close_MRK']) + np.log(stock_df['Low_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['Low_MRK'] / stock_df['Close_MRK'])
 
-        k = 0.5
-        v0_UNH = np.sqrt(v0['overnight_UNH'].mean() + k * v0['open_close_UNH'].mean() + (1 - k) * np.sqrt(v0['rs_var_UNH'].mean()))
-        v0_PFE = np.sqrt(v0['overnight_PFE'].mean() + k * v0['open_close_PFE'].mean() + (1 - k) * np.sqrt(v0['rs_var_PFE'].mean()))
-        v0_MRK = np.sqrt(v0['overnight_MRK'].mean() + k * v0['open_close_MRK'].mean() + (1 - k) * np.sqrt(v0['rs_var_MRK'].mean()))
-
-        # Initialise and propagate CEKF
-        # x0 represents volatility, y0 represents shocks of log return
-        x0 = torch.tensor([v0_UNH, v0_PFE, v0_MRK]).reshape(-1,1)
-        y0 = stock_df.loc[19,[f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']]] - (stock_df.loc[19,['true_rate']] - x0**2 / 2) * dt
-
-        # Clean CEKF data
-        cekf_data = stock_df.loc[19:starting_date, [f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']]]
-
-        def f(x, w):
-            next_x = x + 
-
-    def cekf_loss(self, data, x0, y0):
-
-        kappa_k = 5 * torch.ones(5, dtype=torch.float64)
-        sigma_k = 0.30470 * torch.ones(5, dtype=torch.float64)
-        theta_k = 0.0055 * torch.ones(5, dtype=torch.float64)
-        rho_k = -0.2940 * torch.ones(5, dtype=torch.float64)
-        qk = torch.zeros(6,6)
-        rk = torch.zeros(6,6)
-        pk = torch.eye(6)
-
-        steps = len(data.index)
-        predicted_vols = torch.empty((3,0))
-
-        fk = torch.diag(1 - kappa_k * dt)
-        lk = torch.stack((torch.zeros((3,3)), torch.diag(sigma_k * torch.sqrt(x0 * dt))), dim=2).flatten().reshape(3,6)
-        hk = -0.5 * dt
-        mk = torch.empty(3,3)
-        xk = x0
-        yk = y0
+        k = 0.34 / (1.34 + 21 / 19)
+        stock_df['yz_var_UNH'] = np.sqrt(overnight_UNH.rolling(window=20).mean() + k * open_close_UNH.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_UNH.rolling(window=20).mean()))
+        stock_df['yz_var_PFE'] = np.sqrt(overnight_PFE.rolling(window=20).mean() + k * open_close_PFE.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_PFE.rolling(window=20).mean()))
+        stock_df['yz_var_MRK'] = np.sqrt(overnight_MRK.rolling(window=20).mean() + k * open_close_MRK.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_MRK.rolling(window=20).mean()))
         
-        for k in range(steps):
-            
-            dqk_temp = torch.diag(qk)[::2]
-            dqk = pk * torch.max((1 - kappa_k * dt)**2) + dt**2 * torch.max((kappa_k * theta_k)**2) + torch.max(sigma_k**2) * dt * torch.diag(xk) * 
+        # MLE for CIR process (Kladivk, 2007) MAXIMUM LIKELIHOOD ESTIMATION OF THE COX-INGERSOLL-ROSS PROCESS: THE MATLAB IMPLEMENTATION
+        data = stock_df[[f'yz_var_{stock}' for stock in ['UNH', 'PFE', 'MRK']] + [f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']] + ['true_rate']]
+        data['vol_gain_UNH'] = data[f'yz_var_UNH'].diff()
+        data['vol_gain_PFE'] = data[f'yz_var_PFE'].diff()
+        data['vol_gain_MRK'] = data[f'yz_var_MRK'].diff()
+        data = data.iloc[40:]
+        
+        # [v0,theta,rho,kappa,sigma]
+        # Since all kappa are negative we estimate that separately
+        kappa_UNH = ((dt * (len(data) - 1))**-1 * data['log_return_UNH']**2).sum()
+        theta_UNH, sigma_UNH = self.get_params(data, kappa_UNH, 'UNH')
+        theta_UNH, sigma_UNH = self.minimise(theta_UNH, kappa_UNH, sigma_UNH, data, 'UNH')
+        rho_UNH, return_shock_UNH = self.fit_rho(theta_UNH, kappa_UNH, sigma_UNH, data, 'UNH')
+        v0_UNH = data[f'yz_var_UNH'].iloc[-1]
+        params_UNH = torch.tensor([v0_UNH, theta_UNH, rho_UNH, kappa_UNH, sigma_UNH])
+        
+        kappa_PFE = ((dt * (len(data) - 1))**-1 * data['log_return_PFE']**2).sum()
+        theta_PFE, sigma_PFE = self.get_params(data, kappa_PFE, 'PFE')
+        theta_PFE, sigma_PFE = self.minimise(theta_PFE, kappa_PFE, sigma_PFE, data, 'PFE')
+        rho_PFE, return_shock_PFE = self.fit_rho(theta_PFE, kappa_PFE, sigma_PFE, data, 'UNH')
+        v0_PFE = data[f'yz_var_PFE'].iloc[-1]
+        params_PFE = torch.tensor([v0_PFE, theta_PFE, rho_PFE, kappa_PFE, sigma_PFE])
+        
+        kappa_MRK = ((dt * (len(data) - 1))**-1 * data['log_return_MRK']**2).sum()
+        theta_MRK, sigma_MRK = self.get_params(data, kappa_PFE, 'MRK')
+        theta_MRK, sigma_MRK = self.minimise(theta_MRK, kappa_MRK, sigma_MRK, data, 'MRK')
+        rho_MRK, return_shock_MRK = self.fit_rho(theta_MRK, kappa_MRK, sigma_MRK, data, 'UNH')
+        v0_MRK = data[f'yz_var_MRK'].iloc[-1]
+        params_MRK = torch.tensor([v0_MRK, theta_MRK, rho_MRK, kappa_MRK, sigma_MRK])
+        
+        params = torch.stack((params_UNH, params_PFE, params_MRK), dim=0)
+        
+        # Assume covariances in volatility are only through the respective stock prices
+        log_return_shocks_cov = torch.stack((return_shock_UNH, return_shock_PFE, return_shock_MRK), dim=0).cov()
+        s12 = log_return_shocks_cov[0,1]
+        s13 = log_return_shocks_cov[0,2]
+        s23 = log_return_shocks_cov[1,2]
+        r1 = rho_UNH
+        r2 = rho_PFE
+        r3 = rho_MRK
+        covariance_matrix = torch.tensor([
+                                          [1, r1,                   s12     , s12 * r2     , s13     , s13 * r3     ],
+                                          [r1, 1,                   s12 * r1, s12 * r1 * r2, s13 * r1, s13 * r1 * r3],
+                                          [s12     , s12 * r1     , 1, r2,                   s23     , s23 * r3     ],
+                                          [s12 * r2, s12 * r1 * r2, r2, 1,                   s23 * r2, s23 * r2 * r3],
+                                          [s13     , s13 * r1     , s23     , s23 * r2     , 1, r3                  ],
+                                          [s13 * r3, s13 * r1 * r3, s23 * r3, s23 * r2 * r3, r3, 1                  ]
+                                          ])
+        
+        # Regularise cov
+        covariance_matrix = 0.5 * (covariance_matrix + covariance_matrix.T)
+        v, q = torch.linalg.eigh(covariance_matrix)
+        covariance_matrix = q @ torch.diag(torch.clamp(v, 1e-16)) @ q.T
+        
+        return params, covariance_matrix
+        
+    def get_params(self, data, kappa, stock):
 
-            xk_temp = xk + kappa_k * (theta_k - xk) * dt
-            pk_temp = fk @ pk @ fk.T + lk @ qk @ lk.T + dqk
-
-
-
+        sqrt_var = np.sqrt(data[f'yz_var_{stock}'])
+        observations = data[f'vol_gain_{stock}'] / sqrt_var / np.sqrt(dt)
+        observations = observations + kappa * sqrt_var * np.sqrt(dt)
+        left = np.sqrt(dt) / sqrt_var
+        
+        observations = torch.tensor(observations.values).reshape(-1,1)
+        left = torch.tensor(left.values).reshape(-1,1)
+        kt = left.T @ observations / torch.sum(left**2)
+        theta0 = kt / kappa
+        
+        shocks = observations - kt * left
+        sigma0 = shocks.std()
+        
+        return theta0.item(), sigma0.item()
+        
+    def minimise(self, theta0, kappa, sigma0, data, stock):
+        
+        var_data = data[f'yz_var_{stock}'].to_numpy()
+        
+        tks = optimize.minimize(self.loss, [theta0, sigma0], (kappa, var_data), 'SLSQP', bounds=[(0, None), (0, None)]).x
+        
+        return tks
+        
+    def loss(self, x, kappa, var_data):
+        
+        theta = x[0]
+        sigma = x[1]
+        
+        c = 2 * kappa / (sigma**2 * (1 - np.exp(-kappa * dt)))
+        u = c * var_data[:-1] * np.exp(-kappa * dt).item()
+        v = c * var_data[1:]
+        q = 2 * kappa * theta / sigma**2 - 1
+        
+        loss = u + v - 0.5 * q * np.log(v / u) - np.log(special.iv(q, 2 * np.sqrt(u * v))) # Removed constant terms
+        loss = loss.sum()
+        
+        return loss
+   
+    def fit_rho(self, theta, kappa, sigma, data, stock):
+        
+        vol_shock = data[f'yz_var_{stock}'].diff() - kappa * (theta - data[f'yz_var_{stock}'].shift(1)) * dt
+        vol_shock = vol_shock / sigma / np.sqrt(data[f'yz_var_{stock}'].shift(1)) / np.sqrt(dt)
+        vol_shock = torch.tensor(vol_shock.iloc[40:].values)
+        
+        return_shock = data[f'log_return_{stock}'] - (data['true_rate'] - data[f'yz_var_{stock}'] / 2) * dt
+        return_shock = return_shock / np.sqrt(data[f'yz_var_{stock}'].shift(1)) / np.sqrt(dt)
+        return_shock = torch.tensor(return_shock.iloc[40:].values)
+        
+        rho = torch.stack((return_shock, vol_shock), dim=0).cov()[0,1]
+        
+        return rho.item(), return_shock
+   
     def single_asset_path(self, u, uni, params, r, S0=1, dt=1/250, psic=1.5, gamma1=0.5, gamma2=0.5, verbose=False):
         
         # Brownian motion is generated separately and fed into the Heston model
@@ -602,9 +670,24 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
     
-    S0 = 1000
-    r = 0.04
-    params = calibration_test(S0, r)
-    single_simulation_test()
-    multi_simulation_test([20, 347, 2000])
+    # S0 = 1000
+    # r = 0.04
+    # params = calibration_test(S0, r)
+    # single_simulation_test()
+    # multi_simulation_test([20, 347, 2000])
+    
+    model = HestonModel()
+    params, cov = model.MLE()
+    paths = model.multi_asset_path(torch.randn(256,3,250,2), torch.rand(256,3,250,2), params, 0.04, cov, verbose=True)
+    
+    plt.plot(paths[:,0,:,0].T.detach().numpy())
+    plt.title("Log price")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(paths[:,0,:,1].T.detach().numpy())
+    plt.title("Volatility")
+    plt.show()
+    plt.clf()
+    
     
