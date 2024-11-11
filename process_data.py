@@ -4,6 +4,7 @@ import pandas as pd
 import torch
 import scipy.stats as stats
 import scipy as sp
+from scipy.stats.qmc import MultivariateNormalQMC
 from pingouin import multivariate_normality 
 from arch import arch_model
 
@@ -97,7 +98,7 @@ def dcc_garch_log_loss(x, shocks, sigma, q0):
     
     return -loss
 
-def multivariate_skew_t(nu, iota, steps, paths):
+def multivariate_skew_t(nu, iota, steps, paths, qmc_gen=None, err_cov=None):
 
     # Using Azzalini's skew Student's t-distribution. 
     # Sampling is by a transformation of independent skew-normal and chi-squared variables
@@ -117,23 +118,28 @@ def multivariate_skew_t(nu, iota, steps, paths):
     # projection down (Azzalini and Capitanio, 1999)
     # Azzalini, A., & Capitanio, A. (1999). Statistical applications of the multivariate skew normal distribution. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 61(3), 579–602. doi:10.1111/1467-9868.00194 
 
-    d = np.diag(np.sqrt(np.diag(Omega)))
-    delta = d @ iota # Skew parameter
-    skew_star = (Omega @ delta).flatten()
+    if qmc_gen is None or err_cov is None:
+        d = np.diag(np.sqrt(np.diag(Omega)))
+        delta = d @ iota # Skew parameter
+        skew_star = (Omega @ delta).flatten()
 
-    def loss(skew_guess, delta):
-        skew_guess = skew_guess.reshape(3,1)
-        v = np.linalg.solve(Omega, skew_guess)
-        v = v / np.sqrt(1 - delta.T @ v)
-        return np.sum((v - delta)**2)
-    skew_star = sp.optimize.minimize(loss, skew_star, (delta,), method='SLSQP').x
+        def loss(skew_guess, delta):
+            skew_guess = skew_guess.reshape(3,1)
+            v = np.linalg.solve(Omega, skew_guess)
+            v = v / np.sqrt(1 - delta.T @ v)
+            return np.sum((v - delta)**2)
+        skew_star = sp.optimize.minimize(loss, skew_star, (delta,), method='SLSQP').x
 
-    err_cov = np.block([
-        [1, skew_star.reshape(1,-1)],
-        [skew_star.reshape(-1,1), Omega]
-    ])
+        err_cov = np.block([
+            [1, skew_star.reshape(1,-1)],
+            [skew_star.reshape(-1,1), Omega]
+        ])
 
-    norm = np.random.randn(paths,steps,4,1)
+        qmc_gen = MultivariateNormalQMC([0,0,0,0])
+    
+    norm = qmc_gen.random(paths * steps // 2).reshape(-1, steps, 4, 1)
+    norm = np.concatenate((norm, -norm), axis=0)
+    paths = norm.shape[0]
     norm = np.linalg.cholesky(err_cov) @ norm
     norm = (norm[:,:,:3,:] * np.where(norm[:,:,-1,:] < 0, -1, 1).reshape(paths,steps,1,1))
     norm = norm.reshape(paths, steps, 3)
@@ -145,10 +151,10 @@ def multivariate_skew_t(nu, iota, steps, paths):
     xi = -np.sqrt(nu / np.pi) * (g1 / g2) * (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
     brownian = (xi.reshape(1,1,3) + (norm / np.sqrt(chi))).transpose(0,2,1)
 
-    return brownian
+    return brownian, qmc_gen, err_cov
 
 # Forecast future shocks based on the optimized DCC-GARCH parameters
-def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0):
+def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0, qmc_gen=None, err_cov=None):
     """Forecast future shocks using DCC-GARCH model over given steps."""
 
     a = (np.tanh(params[0]) + 1) / 2
@@ -158,7 +164,7 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
     forecast = np.tile(s0, (num_paths, 1, 1))
         
     univariate_vars = np.vstack([garch_models[stock].forecast(horizon=steps).variance for stock in ['UNH', 'PFE', 'MRK']]).T
-    future_shock_process = multivariate_skew_t(nu, iota, steps, num_paths)
+    future_shock_process, qmc_gen, err_cov = multivariate_skew_t(nu, iota, steps, num_paths, qmc_gen, err_cov)
 
     q_t = q0
     shocks = np.array(shocks)
@@ -182,7 +188,7 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
         q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
         q_star_t = np.apply_along_axis(np.diag, -1, np.diagonal(q_t, axis1=1, axis2=2)**-0.5)
     
-    return forecast
+    return forecast, qmc_gen, err_cov
 
 class GARCH():
 
@@ -196,6 +202,8 @@ class GARCH():
                 (self.data[f'stock_price_{stock}'] - self.data[f'stock_price_{stock}'].shift(1) * (1 + self.data['true_rate'] * dt)) / (self.data[f'stock_price_{stock}'].shift(1) * np.sqrt(dt))
                 )
         self.shocks = self.data[['simple_return_shock_UNH', 'simple_return_shock_PFE', 'simple_return_shock_MRK']].dropna().iloc[1:self.current_date]
+        self.qmc_gen = None
+        self.err_cov = None
     
     def fit(self, verbose=False):
 
@@ -231,9 +239,15 @@ class GARCH():
             print('nu:', nu)
             print('iota:', iota)
     
-    def forecast(self, steps, num_paths):
-        s0 = np.array(self.data[['stock_price_UNH', 'stock_price_PFE', 'stock_price_MRK']].iloc[self.current_date]).reshape(1,3,1)
-        return forecast_dcc_garch(steps, num_paths, self.r, s0, self.optimized_params, self.garch_models, self.shocks, self.q0)
+    def forecast(self, steps, num_paths, s0=None):
+        if s0 is None:
+            s0 = np.array(self.data[['stock_price_UNH', 'stock_price_PFE', 'stock_price_MRK']].iloc[self.current_date]).reshape(1,3,1)
+        s0 = s0.reshape(1,3,1)
+        forecast, qmc_gen, err_cov = forecast_dcc_garch(steps, num_paths, self.r, s0, self.optimized_params, self.garch_models, self.shocks, self.q0, self.qmc_gen)
+        if self.qmc_gen is None or self.err_cov is None:
+            self.qmc_gen = qmc_gen
+            self.err_cov = err_cov
+        return forecast
 
 if __name__=='__main__':
     model = GARCH()

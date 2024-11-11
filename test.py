@@ -14,25 +14,25 @@ sobol = torch.quasirandom.SobolEngine(3 * 2 * 317)
 
 params, cov = sim.MLE()
 
-epochs = 10000
+epochs = 2000
 with tqdm(total=epochs, desc="Training Progress") as pbar:
     for epoch in range(epochs):
         
-        uni = sobol.draw(256).reshape(256,3,-1,2)
+        uni = sobol.draw(512).reshape(512,3,-1,2)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
 
         path = sim.multi_asset_path(u, uni, params, r, cov, s0)
         losses = model.minimise_over_path(path[:,:,:,0])
         
         pbar.set_postfix({'Worst loss': max(losses), 
-                            'Best Loss': min(losses)})
+                          'Best Loss': min(losses)})
         pbar.update(1)
 
 # Find delta
 delta = torch.empty(3)
 for i in range(3):
         
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -43,7 +43,7 @@ for i in range(3):
     up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)
     up_payoff = model.evaluate_payoff(up_paths[:,:,:,0]).nanmean()
         
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -55,14 +55,14 @@ for i in range(3):
     down_payoff = model.evaluate_payoff(down_paths[:,:,:,0]).nanmean()
     
     delta[i] = (up_payoff - down_payoff) / 0.02 / s0[i]
-print(' Payoff delta:', delta.tolist())
+print('Payoff delta:', delta.tolist())
 
 # Find gamma
 gamma = torch.empty((3,3))
 for i in range(3):
     for j in range(3):
         
-        uni = sobol.draw(5000).reshape(5000,3,-1,2)
+        uni = sobol.draw(50000).reshape(50000,3,-1,2)
         av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
         uni = torch.cat((uni, av), dim=0)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -74,7 +74,7 @@ for i in range(3):
         up1_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)
         up1_payoff = model.evaluate_payoff(up_paths[:,:,:,0]).nanmean()
             
-        uni = sobol.draw(5000).reshape(5000,3,-1,2)
+        uni = sobol.draw(50000).reshape(50000,3,-1,2)
         av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
         uni = torch.cat((uni, av), dim=0)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -86,7 +86,7 @@ for i in range(3):
         down1_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)
         down1_payoff = model.evaluate_payoff(down_paths[:,:,:,0]).nanmean()
             
-        uni = sobol.draw(5000).reshape(5000,3,-1,2)
+        uni = sobol.draw(50000).reshape(50000,3,-1,2)
         av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
         uni = torch.cat((uni, av), dim=0)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -98,7 +98,7 @@ for i in range(3):
         down2_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)
         down2_payoff = model.evaluate_payoff(down_paths[:,:,:,0]).nanmean()
         
-        uni = sobol.draw(5000).reshape(5000,3,-1,2)
+        uni = sobol.draw(50000).reshape(50000,3,-1,2)
         av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
         uni = torch.cat((uni, av), dim=0)
         u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -116,7 +116,7 @@ print('Payoff gamma:', gamma.tolist())
 put_delta = torch.empty(3)
 for i in range(3):
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -127,7 +127,7 @@ for i in range(3):
     up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)[:,i,:,0]
     up_put = torch.clamp(s0_temp[i]-up_paths[:,-1], 0).nanmean()
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -144,7 +144,7 @@ print('Put delta:', put_delta.tolist())
 put_gamma = torch.empty((3,3))
 for i in range(3):
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -155,7 +155,7 @@ for i in range(3):
     up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)[:,i,:,0]
     up_put = torch.clamp(s0_temp[i]-up_paths[:,-1], 0).nanmean()
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -165,7 +165,7 @@ for i in range(3):
     mid_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)[:,i,:,0]
     mid_put = torch.clamp(s0_temp[i]-mid_paths[:,-1], 0).nanmean()
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -182,7 +182,7 @@ print('Put gamma:', put_delta.tolist())
 stock_delta = torch.empty(3)
 for i in range(3):
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -193,7 +193,7 @@ for i in range(3):
     up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0, verbose=False)[:,i,:,0]
     up_put = up_paths[:,-1].nanmean()
     
-    uni = sobol.draw(5000).reshape(5000,3,-1,2)
+    uni = sobol.draw(50000).reshape(50000,3,-1,2)
     av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
     uni = torch.cat((uni, av), dim=0)
     u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
@@ -205,11 +205,6 @@ for i in range(3):
     down_put = down_paths[:,-1].nanmean()
     
     stock_delta[i] = (up_put - down_put) / 0.02 / s0[i]
-    
-    import matplotlib.pyplot as plt
-    plt.plot(up_paths.T.numpy(), color='blue', alpha=0.3)
-    plt.plot(down_paths.T.numpy(), color='red', alpha=0.3)
-    plt.show()
 print('Stock delta:', stock_delta.tolist())
 
     
