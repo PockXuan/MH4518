@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.init as init
 import torch.nn.functional as F
 from heston_model import HestonModel
 from tqdm import tqdm
@@ -52,7 +51,12 @@ class CallablePayoff():
             # Model inputs are discounted to initial fixing date and scaled to unity. 
             # Their outputs are already discounted, so we compare everything discounted
             # Model prediction also excludes coupon
-            self.LSarray = [(lambda model: (model, optim.Adam(model.parameters(), lr=0.001)))(LSUnit()) for _ in range(sum(i >= time_elapsed for i in self.calling_dates))]
+            self.LSarray = []
+            for _ in self.calling_dates:
+                model = LSUnit()
+                optimiser = optim.Adam(model.parameters())
+                scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimiser, 'min', 1.1**-1, 20)
+                self.LSarray = [(model, optimiser, scheduler)] + self.LSarray
         else:
             print("No future calls available. Product is now European.")
     
@@ -160,7 +164,7 @@ class CallablePayoff():
 
         losses = []
             
-        latest_model, latest_optimiser = self.LSarray[-1]
+        latest_model, latest_optimiser, latest_scheduler = self.LSarray[-1]
         latest_coupon_payment = np.exp(-self.r * self.payoff_dates[-1] / 250) + np.exp(-self.r * self.payoff_dates[-2] / 250)
         next_payoff_with_coupon = payoff_at_maturity + latest_coupon_payment
         predicted_payoff = latest_model(input[:,:,self.calling_dates[-1] - self.current_date]) * 1000 * np.exp(-self.r * self.calling_dates[-1] / 250) + latest_coupon_payment
@@ -172,6 +176,7 @@ class CallablePayoff():
         latest_optimiser.zero_grad()
         latest_loss.backward()
         latest_optimiser.step()
+        latest_scheduler.step(latest_loss)
         
         total_payoff = torch.where(predicted_payoff < 1000 * np.exp(-self.r * self.calling_dates[-1] / 250),
                                    next_payoff_with_coupon,
@@ -180,7 +185,7 @@ class CallablePayoff():
         if self.current_date > self.calling_dates[-2]:
             return losses
             
-        second_latest_model, second_latest_optimiser = self.LSarray[-2]
+        second_latest_model, second_latest_optimiser, second_latest_scheduler = self.LSarray[-2]
         second_latest_coupon_payment = np.exp(-self.r * self.payoff_dates[-3] / 250)
         next_payoff_with_coupon = total_payoff + second_latest_coupon_payment
         predicted_payoff = second_latest_model(input[:,:,self.calling_dates[-2] - self.current_date]) * 1000 * np.exp(-self.r * self.calling_dates[-2] / 250) + second_latest_coupon_payment
@@ -192,6 +197,7 @@ class CallablePayoff():
         second_latest_optimiser.zero_grad()
         second_latest_loss.backward()
         second_latest_optimiser.step()
+        second_latest_scheduler.step(second_latest_loss)
         
         total_payoff = torch.where(predicted_payoff < 1000 * np.exp(-self.r * self.calling_dates[-2] / 250),
                                    next_payoff_with_coupon,
@@ -200,7 +206,7 @@ class CallablePayoff():
         if self.current_date > self.calling_dates[-3]:
             return losses
             
-        earliest_model, earliest_optimiser = self.LSarray[-3]
+        earliest_model, earliest_optimiser, earliest_scheduler = self.LSarray[-3]
         earliest_coupon_payment = np.exp(-self.r * self.payoff_dates[-4] / 250)
         next_payoff_with_coupon = total_payoff + earliest_coupon_payment
         predicted_payoff = earliest_model(input[:,:,self.calling_dates[-3] - self.current_date]) * 1000 * np.exp(-self.r * self.calling_dates[-3] / 250) + earliest_coupon_payment
@@ -212,55 +218,57 @@ class CallablePayoff():
         earliest_optimiser.zero_grad()
         earliest_loss.backward()
         earliest_optimiser.step()
+        earliest_scheduler.step(earliest_loss)
             
         return losses
 
-from process_data import GARCH
-from heston_model import HestonModel
+if __name__ == '__main__':
+    from process_data import GARCH
+    from heston_model import HestonModel
 
-# model = GARCH()
-# model.fit()
+    # model = GARCH()
+    # model.fit()
 
-model = HestonModel()
-s0 = torch.tensor([480.22924805, 34.61804962, 107.69082642])
-# [v0,theta,rho,kappa,sigma]
-params = torch.tensor([[0.0041],
-                        [0.0055],
-                        [-0.2940],
-                        [5.0],
-                        [0.30470]], dtype=torch.float64).to(device).to(device).reshape(1,-1).tile(3,1)
+    model = HestonModel()
+    s0 = torch.tensor([480.22924805, 34.61804962, 107.69082642])
+    # [v0,theta,rho,kappa,sigma]
+    params = torch.tensor([[0.0041],
+                            [0.0055],
+                            [-0.2940],
+                            [5.0],
+                            [0.30470]], dtype=torch.float64).to(device).to(device).reshape(1,-1).tile(3,1)
 
-thing = CallablePayoff(0, 0.0419, [480.22924805, 34.61804962, 107.69082642])
+    thing = CallablePayoff(0, 0.0419, [480.22924805, 34.61804962, 107.69082642])
 
-epochs = 400
-with tqdm(total=epochs, desc="Training Progress") as pbar:
-    for epoch in range(epochs):
+    epochs = 400
+    with tqdm(total=epochs, desc="Training Progress") as pbar:
+        for epoch in range(epochs):
 
-        path = model.multi_asset_path(torch.randn((254,3,317,2)), torch.rand((254,3,317,2)), params, 0.0419, torch.eye(6), s0)
-        losses = thing.minimise_over_path(path[:,:,:,0])
+            path = model.multi_asset_path(torch.randn((254,3,317,2)), torch.rand((254,3,317,2)), params, 0.0419, torch.eye(6), s0)
+            losses = thing.minimise_over_path(path[:,:,:,0])
 
-        # path = model.forecast(317, 256)
-        # path = path[(path>0).all(axis=2).all(axis=1)]
-        # losses = thing.minimise_over_path(np.log(path))
-        
-        pbar.set_postfix({'Worst loss': max(losses), 
-                            'Best Loss': min(losses)})
-        pbar.update(1)
+            # path = model.forecast(317, 256)
+            # path = path[(path>0).all(axis=2).all(axis=1)]
+            # losses = thing.minimise_over_path(np.log(path))
+            
+            pbar.set_postfix({'Worst loss': max(losses), 
+                                'Best Loss': min(losses)})
+            pbar.update(1)
 
-s0 = torch.tensor([480.22924805, 34.61804962, 107.69082642])
-path = model.multi_asset_path(torch.randn((254,3,317,2)), torch.rand((254,3,317,2)), params, 0.04, torch.eye(6), s0)
+    s0 = torch.tensor([480.22924805, 34.61804962, 107.69082642])
+    path = model.multi_asset_path(torch.randn((254,3,317,2)), torch.rand((254,3,317,2)), params, 0.04, torch.eye(6), s0)
 
-# import matplotlib.pyplot as plt
-# plt.plot(path[:,0,:,0].T)
-# plt.show()
+    # import matplotlib.pyplot as plt
+    # plt.plot(path[:,0,:,0].T)
+    # plt.show()
 
-x = thing.evaluate_payoff(path[:,:,:,0], True)
-print(x)
-# path = model.forecast(317, 256)
-# path = path[(path>0).all(axis=2).all(axis=1)]
-# payoff = thing.evaluate_payoff(np.log(path), False)
-# print(payoff)
-# torch.set_printoptions(profile="full")
-# print(torch.cat((thing.evaluate_payoff(path[:,:,:,0], False), torch.log(torch.tensor(path[:,:,:,0][:,:,-1])) - torch.log(s0).reshape(1,3), (torch.log(torch.tensor(path[:,:,:,0])) < (np.log(0.59) + torch.log(s0).reshape(1,3,1))).any(dim=2).any(dim=1).reshape(-1,1)), dim=1))
-# torch.set_printoptions(profile="default") # reset
-# print((payoff-1000)/10)
+    x = thing.evaluate_payoff(path[:,:,:,0], True)
+    print(x)
+    # path = model.forecast(317, 256)
+    # path = path[(path>0).all(axis=2).all(axis=1)]
+    # payoff = thing.evaluate_payoff(np.log(path), False)
+    # print(payoff)
+    # torch.set_printoptions(profile="full")
+    # print(torch.cat((thing.evaluate_payoff(path[:,:,:,0], False), torch.log(torch.tensor(path[:,:,:,0][:,:,-1])) - torch.log(s0).reshape(1,3), (torch.log(torch.tensor(path[:,:,:,0])) < (np.log(0.59) + torch.log(s0).reshape(1,3,1))).any(dim=2).any(dim=1).reshape(-1,1)), dim=1))
+    # torch.set_printoptions(profile="default") # reset
+    # print((payoff-1000)/10)
