@@ -9,13 +9,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 standard_normal = torch.distributions.Normal(torch.tensor([0]).to(device), torch.tensor([1]).to(device))
 s0 = torch.tensor([489.44, 36.65, 111])
 r = 0.0419
-importance_drift = -r - 0.41 / 317
-importance_drift = torch.tensor([[importance_drift],
-                                 [0],
-                                 [importance_drift],
-                                 [0],
-                                 [importance_drift],
-                                 [0]])
+# importance_drift = -r - 0.41 / 317
+# importance_drift = torch.tensor([[importance_drift],
+#                                  [0],
+#                                  [importance_drift],
+#                                  [0],
+#                                  [importance_drift],
+#                                  [0]])
 paths = 50000
 
 sim = HestonModel()
@@ -24,10 +24,10 @@ sobol = torch.quasirandom.SobolEngine(3 * 2 * 317)
 
 params, cov = sim.MLE()
 
-# Regularise cov
-cov = 0.5 * (cov + cov.T)
-cov_eigvals, cov_eigvecs = torch.linalg.eigh(cov)
-cov = cov_eigvecs @ torch.diag(torch.clamp(cov_eigvals, 1e-6)) @ cov_eigvecs.T
+# # Regularise cov
+# cov = 0.5 * (cov + cov.T)
+# cov_eigvals, cov_eigvecs = torch.linalg.eigh(cov)
+# cov = cov_eigvecs @ torch.diag(torch.clamp(cov_eigvals, 1e-6)) @ cov_eigvecs.T
         
 # Common random numbers
 paths //= 2
@@ -36,13 +36,6 @@ av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
 uni = torch.cat((uni, av), dim=0)
 u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
 paths *= 2
-
-# Importance sampling bias and weights
-importance_drift = importance_drift.reshape(1,6,1)
-u = u.transpose(1,2).reshape(paths, -1, 6, 1)
-u = u + torch.linalg.solve(torch.linalg.cholesky(cov), importance_drift)
-weights = torch.exp(importance_drift.transpose(1,2) @ torch.linalg.solve(cov, u.sum(dim=1)) - 0.5 * importance_drift.transpose(1,2) @ torch.linalg.solve(cov, importance_drift)).reshape(-1,1)
-u = u.reshape(paths, -1, 3, 2).transpose(1,2)
 
 def knock_in_min_basket_long_put(paths):
 
@@ -103,7 +96,7 @@ def find_delta(payoff_func, paths=None):
         down_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
         down_payoff = payoff_func(down_paths[:,:,:,0])
         
-        delta_i_list = (up_payoff - down_payoff) * weights / 0.02 / s0[i]
+        delta_i_list = (up_payoff - down_payoff) / 0.02 / s0[i]
         delta[i] = delta_i_list.nanmean()
     
     return delta
@@ -146,7 +139,7 @@ def find_gamma_univariate(payoff_func, paths=None):
         down_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
         down_payoff = payoff_func(down_paths[:,:,:,0])
         
-        gamma_i_list = (up_payoff - 2 * mid_payoff + down_payoff) * weights / (0.02**2 * s0[i]**2)
+        gamma_i_list = (up_payoff - 2 * mid_payoff + down_payoff) / (0.02**2 * s0[i]**2)
         gamma[i] = gamma_i_list.nanmean()
     
     return gamma
@@ -205,7 +198,7 @@ def find_gamma_cov(payoff_func, paths=None):
             up2_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
             up2_payoff = payoff_func(up2_paths[:,:,:,0])
             
-            gamma_i_j_list = (up1_payoff - down1_payoff - down2_payoff + up2_payoff) * weights / (4 * 0.01**2 * s0[i] * s0[j])
+            gamma_i_j_list = (up1_payoff - down1_payoff - down2_payoff + up2_payoff) / (4 * 0.01**2 * s0[i] * s0[j])
             gamma[i,j] = gamma_i_j_list.nanmean()
     
     return gamma
@@ -271,9 +264,8 @@ print(number_of_stocks)
 # Find portfolio sensitivities
 portfolio_payoff = lambda paths: model.evaluate_payoff(paths) + number_of_baskets * knock_in_min_basket_long_put(paths) + number_of_stocks * stock_payoff(paths)
 portfolio_delta = find_delta(portfolio_payoff, 100000)
-portfoliok_gamma = find_gamma_cov(portfolio_payoff, 100000)
+portfolio_gamma = find_gamma_cov(portfolio_payoff, 100000)
 print('Portfolio delta:')
 print(portfolio_delta)
 print('Portfolio gamma:')
-print(portfoliok_gamma)
-
+print(portfolio_gamma)
