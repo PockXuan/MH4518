@@ -9,12 +9,40 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 standard_normal = torch.distributions.Normal(torch.tensor([0]).to(device), torch.tensor([1]).to(device))
 s0 = torch.tensor([489.44, 36.65, 111])
 r = 0.0419
+importance_drift = -r - 0.41 / 317
+importance_drift = torch.tensor([[importance_drift],
+                                 [0],
+                                 [importance_drift],
+                                 [0],
+                                 [importance_drift],
+                                 [0]])
+paths = 50000
 
 sim = HestonModel()
 model = CallablePayoff(0, 0.0419, s0)
 sobol = torch.quasirandom.SobolEngine(3 * 2 * 317)
 
 params, cov = sim.MLE()
+
+# Regularise cov
+cov = 0.5 * (cov + cov.T)
+cov_eigvals, cov_eigvecs = torch.linalg.eigh(cov)
+cov = cov_eigvecs @ torch.diag(torch.clamp(cov_eigvals, 1e-6)) @ cov_eigvecs.T
+        
+# Common random numbers
+paths //= 2
+uni = sobol.draw(paths).reshape(paths,3,-1,2)
+av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+uni = torch.cat((uni, av), dim=0)
+u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+paths *= 2
+
+# Importance sampling bias and weights
+importance_drift = importance_drift.reshape(1,6,1)
+u = u.transpose(1,2).reshape(paths, -1, 6, 1)
+u = u + torch.linalg.solve(torch.linalg.cholesky(cov), importance_drift)
+weights = torch.exp(importance_drift.transpose(1,2) @ torch.linalg.solve(cov, u.sum(dim=1)) - 0.5 * importance_drift.transpose(1,2) @ torch.linalg.solve(cov, importance_drift)).reshape(-1,1)
+u = u.reshape(paths, -1, 3, 2).transpose(1,2)
 
 def knock_in_min_basket_long_put(paths):
 
@@ -47,136 +75,138 @@ def train(paths_per_epochs, epochs):
                                 'Best Loss': min(losses)})
             pbar.update(1)
 
-def find_delta(payoff_func, paths):
+def find_delta(payoff_func, paths=None):
     
-    paths //= 2
+    # paths //= 2
     delta = torch.empty(3)
     for i in range(3):
             
-        uni = sobol.draw(paths).reshape(paths,3,-1,2)
-        av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-        uni = torch.cat((uni, av), dim=0)
-        u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+        # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+        # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+        # uni = torch.cat((uni, av), dim=0)
+        # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
         
         s0_temp = s0
         s0_temp[i] += 0.01 * s0[i]
         
         up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-        up_payoff = payoff_func(up_paths[:,:,:,0]).nanmean()
+        up_payoff = payoff_func(up_paths[:,:,:,0])
             
-        uni = sobol.draw(paths).reshape(paths,3,-1,2)
-        av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-        uni = torch.cat((uni, av), dim=0)
-        u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+        # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+        # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+        # uni = torch.cat((uni, av), dim=0)
+        # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
         
         s0_temp = s0
         s0_temp[i] -= 0.01 * s0[i]
         
         down_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-        down_payoff = payoff_func(down_paths[:,:,:,0]).nanmean()
+        down_payoff = payoff_func(down_paths[:,:,:,0])
         
-        delta[i] = (up_payoff - down_payoff) / 0.02 / s0[i]
+        delta_i_list = (up_payoff - down_payoff) * weights / 0.02 / s0[i]
+        delta[i] = delta_i_list.nanmean()
     
     return delta
 
-def find_gamma_univariate(payoff_func, paths):
+def find_gamma_univariate(payoff_func, paths=None):
     
-    paths //= 2
     gamma = torch.empty(3)
     for i in range(3):
             
-        uni = sobol.draw(paths).reshape(paths,3,-1,2)
-        av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-        uni = torch.cat((uni, av), dim=0)
-        u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+        # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+        # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+        # uni = torch.cat((uni, av), dim=0)
+        # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
         
         s0_temp = s0
         s0_temp[i] += 0.01 * s0[i]
         
         up_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-        up_payoff = payoff_func(up_paths[:,:,:,0]).nanmean()
+        up_payoff = payoff_func(up_paths[:,:,:,0])
             
-        uni = sobol.draw(paths).reshape(paths,3,-1,2)
-        av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-        uni = torch.cat((uni, av), dim=0)
-        u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+        # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+        # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+        # uni = torch.cat((uni, av), dim=0)
+        # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
         
         s0_temp = s0
         s0_temp[i] += 0.01 * s0[i]
         
         mid_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-        mid_payoff = payoff_func(mid_paths[:,:,:,0]).nanmean()
+        mid_payoff = payoff_func(mid_paths[:,:,:,0])
             
-        uni = sobol.draw(paths).reshape(paths,3,-1,2)
-        av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-        uni = torch.cat((uni, av), dim=0)
-        u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+        # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+        # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+        # uni = torch.cat((uni, av), dim=0)
+        # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
         
         s0_temp = s0
         s0_temp[i] -= 0.01 * s0[i]
         
         down_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-        down_payoff = payoff_func(down_paths[:,:,:,0]).nanmean()
+        down_payoff = payoff_func(down_paths[:,:,:,0])
         
-        gamma[i] = (up_payoff - 2* mid_payoff + down_payoff) / (0.02**2 * s0[i]**2)
+        gamma_i_list = (up_payoff - 2 * mid_payoff + down_payoff) * weights / (0.02**2 * s0[i]**2)
+        gamma[i] = gamma_i_list.nanmean()
     
     return gamma
 
-def find_gamma_cov(payoff_func, paths):
+def find_gamma_cov(payoff_func, paths=None):
     
-    paths //= 2
+    # paths //= 2
     gamma = torch.empty(3,3)
     for i in range(3):
         for j in range(3):
-            uni = sobol.draw(paths).reshape(paths,3,-1,2)
-            av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-            uni = torch.cat((uni, av), dim=0)
-            u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+            # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+            # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+            # uni = torch.cat((uni, av), dim=0)
+            # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
             
             s0_temp = s0
             s0_temp[i] += 0.01 * s0[i]
             s0_temp[j] += 0.01 * s0[j]
             
             up1_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-            up1_payoff = payoff_func(up1_paths[:,:,:,0]).nanmean()
+            up1_payoff = payoff_func(up1_paths[:,:,:,0])
                 
-            uni = sobol.draw(paths).reshape(paths,3,-1,2)
-            av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-            uni = torch.cat((uni, av), dim=0)
-            u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+            # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+            # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+            # uni = torch.cat((uni, av), dim=0)
+            # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
             
             s0_temp = s0
             s0_temp[i] += 0.01 * s0[i]
             s0_temp[j] -= 0.01 * s0[j]
             
             down1_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-            down1_payoff = payoff_func(down1_paths[:,:,:,0]).nanmean()
+            down1_payoff = payoff_func(down1_paths[:,:,:,0])
                 
-            uni = sobol.draw(paths).reshape(paths,3,-1,2)
-            av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-            uni = torch.cat((uni, av), dim=0)
-            u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+            # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+            # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+            # uni = torch.cat((uni, av), dim=0)
+            # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
             
             s0_temp = s0
             s0_temp[i] -= 0.01 * s0[i]
             s0_temp[j] += 0.01 * s0[j]
             
             down2_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-            down2_payoff = payoff_func(down2_paths[:,:,:,0]).nanmean()
+            down2_payoff = payoff_func(down2_paths[:,:,:,0])
                 
-            uni = sobol.draw(paths).reshape(paths,3,-1,2)
-            av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
-            uni = torch.cat((uni, av), dim=0)
-            u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
+            # uni = sobol.draw(paths).reshape(paths,3,-1,2)
+            # av = torch.stack((1-uni[:,:,:,0], uni[:,:,:,1]), dim=-1)
+            # uni = torch.cat((uni, av), dim=0)
+            # u = standard_normal.icdf(uni * (1 - 2 * 1e-6) + 1e-6)
             
             s0_temp = s0
             s0_temp[i] -= 0.01 * s0[i]
             s0_temp[j] -= 0.01 * s0[j]
             
             up2_paths = sim.multi_asset_path(u, uni, params, r, cov, s0_temp, verbose=False)
-            up2_payoff = payoff_func(up2_paths[:,:,:,0]).nanmean()
+            up2_payoff = payoff_func(up2_paths[:,:,:,0])
             
-            gamma[i,j] = (up1_payoff - down1_payoff - down2_payoff + up2_payoff) / (4 * 0.01**2 * s0[i] * s0[j])
+            gamma_i_j_list = (up1_payoff - down1_payoff - down2_payoff + up2_payoff) * weights / (4 * 0.01**2 * s0[i] * s0[j])
+            gamma[i,j] = gamma_i_j_list.nanmean()
     
     return gamma
 
@@ -207,16 +237,16 @@ def hedge(product_delta, product_gamma, kimblp_delta, kimblp_gamma, stock_delta)
 train(2048, 1000)
 
 # Find product sensitivities
-product_delta = find_delta(model.evaluate_payoff, 1000000)
-product_gamma = find_gamma_cov(model.evaluate_payoff, 1000000)
+product_delta = find_delta(model.evaluate_payoff, 100000)
+product_gamma = find_gamma_cov(model.evaluate_payoff, 100000)
 print('Product delta:')
 print(product_delta)
 print('Product gamma:')
 print(product_gamma)
 
 # Find gamma hedge sensitivities
-kimblp_delta = find_delta(knock_in_min_basket_long_put, 1000000)
-kimblp_gamma = find_gamma_cov(knock_in_min_basket_long_put, 1000000)
+kimblp_delta = find_delta(knock_in_min_basket_long_put, 100000)
+kimblp_gamma = find_gamma_cov(knock_in_min_basket_long_put, 100000)
 print('Knock in basket delta:')
 print(kimblp_delta)
 print('Knock in basket gamma:')
@@ -224,8 +254,8 @@ print(kimblp_gamma)
 
 # Find stock sensitivities
 stock_payoff = lambda paths: 1000*(torch.exp(paths[:,:,-1]) - s0.reshape(1,-1))
-stock_delta = find_delta(stock_payoff, 1000000)
-stock_gamma = find_gamma_cov(stock_payoff, 1000000)
+stock_delta = find_delta(stock_payoff, 100000)
+stock_gamma = find_gamma_cov(stock_payoff, 100000)
 print('Stock delta:')
 print(stock_delta)
 print('Stock gamma:')
@@ -240,8 +270,8 @@ print(number_of_stocks)
 
 # Find portfolio sensitivities
 portfolio_payoff = lambda paths: model.evaluate_payoff(paths) + number_of_baskets * knock_in_min_basket_long_put(paths) + number_of_stocks * stock_payoff(paths)
-portfolio_delta = find_delta(portfolio_payoff, 1000000)
-portfoliok_gamma = find_gamma_cov(portfolio_payoff, 1000000)
+portfolio_delta = find_delta(portfolio_payoff, 100000)
+portfoliok_gamma = find_gamma_cov(portfolio_payoff, 100000)
 print('Portfolio delta:')
 print(portfolio_delta)
 print('Portfolio gamma:')

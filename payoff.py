@@ -69,8 +69,8 @@ class CallablePayoff():
 
         path = torch.tensor(path)
         num_paths, _, num_timesteps = path.shape
-        path = path[torch.isfinite(path).all(dim=2).all(dim=1).reshape(-1,1,1).tile(1,3,num_timesteps)].reshape(-1,3,num_timesteps)
-        num_paths, _, num_timesteps = path.shape
+        # path = path[torch.isfinite(path).all(dim=2).all(dim=1).reshape(-1,1,1).tile(1,3,num_timesteps)].reshape(-1,3,num_timesteps)
+        # num_paths, _, num_timesteps = path.shape
 
         log_stock_change = path - self.S0.reshape(1,3,1).tile(num_paths, 1, num_timesteps)
         barrier_hit = torch.cummax(log_stock_change < np.log(0.59), dim=2)[0].any(dim=1)
