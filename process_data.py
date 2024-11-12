@@ -179,10 +179,10 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
     for i in range(steps):
         a_t = future_shock_process[:,:,i].reshape(num_paths,3,1)
         
-        d_t = np.diag(np.sqrt(univariate_vars[i,:] / 100))
+        d_t = np.diag(np.sqrt(univariate_vars[i,:] / 10000))
         h_t = d_t @ q_star_t @ q_t @ q_star_t @ d_t
         next_shock = np.linalg.cholesky(h_t) @ a_t
-        next_stock_price = np.clip(forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt) / 10), 0, None)
+        next_stock_price = np.clip(forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt)), 0, None)
         forecast = np.concatenate((forecast, next_stock_price.reshape(num_paths,3,1)), axis=2)
         
         q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
