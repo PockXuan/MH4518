@@ -10,7 +10,7 @@ import os
 standard_normal = torch.distributions.Normal(torch.tensor([0]), torch.tensor([1]))
 
 # For MRK
-df = pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK_calls.csv")
+df = pd.read_csv(os.getcwd() + "/datasets/MRK_calls.csv")
 df = df[['lastTradeDate', 'strike', 'lastPrice', 'expiry']]
 
 df['lastTradeDate'] = pd.to_datetime(df['lastTradeDate']).dt.tz_localize(None).dt.date
@@ -31,7 +31,7 @@ for days_from_ref, group in df.groupby('business_days_from_reference'):
     MRK_dict[days_from_ref] = tensor_group
 
 # For PFE
-df = pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE_calls.csv")
+df = pd.read_csv(os.getcwd() + "/datasets/PFE_calls.csv")
 df = df[['lastTradeDate', 'strike', 'lastPrice', 'expiry']]
 
 df['lastTradeDate'] = pd.to_datetime(df['lastTradeDate']).dt.tz_localize(None).dt.date
@@ -52,7 +52,7 @@ for days_from_ref, group in df.groupby('business_days_from_reference'):
     PFE_dict[days_from_ref] = tensor_group
     
 # For UNH
-df = pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH_calls.csv")
+df = pd.read_csv(os.getcwd() + "/datasets/UNH_calls.csv")
 df = df[['lastTradeDate', 'strike', 'lastPrice', 'expiry']]
 
 df['lastTradeDate'] = pd.to_datetime(df['lastTradeDate']).dt.tz_localize(None).dt.date

@@ -6,7 +6,7 @@ import scipy.stats as stats
 import scipy as sp
 from scipy.stats.qmc import MultivariateNormalQMC
 from pingouin import multivariate_normality 
-from arch import arch_model
+from arch import arch_model as am
 
 # Set a reference date for processing
 REFERENCE_DATE = pd.to_datetime("2023-08-23").date()
@@ -50,7 +50,7 @@ def fit_garch_models(data):
     """Fit GARCH models to stock simple returns and extract residuals and conditional volatilities."""
     garch_models = {}
     for stock in ['UNH', 'PFE', 'MRK']:
-        garch_models[stock] = arch_model(100 * data[f'simple_return_shock_{stock}'], vol='Garch', p=1, q=1).fit(disp='off')
+        garch_models[stock] = am(100 * data[f'simple_return_shock_{stock}'], vol='Garch', p=1, q=1).fit(disp='off')
     return garch_models
 
 # Following the paper at https://ntnuopen.ntnu.no/ntnu-xmlui/bitstream/handle/11250/259296/724505_FULLTEXT01.pdf
