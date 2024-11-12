@@ -27,7 +27,7 @@ def parameterEstimationWithTicker(ticker: str, start: str, end: str) -> tuple[fl
 
 
 def calculate_var_cvar(returns, confidence_level=0.95):
-    sorted_returns = np.sort(returns)
+    sorted_returns = np.sort(returns, axis=0)
     var_index = int((1 - confidence_level) * len(sorted_returns))
     var = sorted_returns[var_index]
     cvar = sorted_returns[:var_index].mean()

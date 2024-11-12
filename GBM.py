@@ -310,7 +310,7 @@ class MultiBS:
         T = (end_index - start_index)  # Time horizon for backtesting
 
         # Run forward simulation starting from S0
-        simulated_data = self.simulate_multi_GBM_exact(T, M, S0=historical_prices[0, :])
+        simulated_data = self.simulate_multi_GBM_antithetic(T, M, S0=historical_prices[0, :])
         
         # Plot backtesting results
         
@@ -351,45 +351,6 @@ class MultiBS:
         plt.show()
 
 
-    def multi_asset_path(self, u, uni, params, r, corr, S0=None, dt=1/250, n=3, verbose=False, *args, **kwargs):
-        """
-        Multi-Asset Path Simulation using Geometric Brownian Motion (GBM).
-        Args:
-            u: Array of normally drawn values (shape: num_paths, num_assets, num_timesteps, 2)
-            params: Array of Black-Scholes parameters for each asset (shape: n, 1), [sigma]
-            r: Risk-free rate
-            corr: Correlation matrix between assets
-            S0: Initial stock prices (shape: n, 1)
-            dt: Time increment (default is 1/250 for daily steps)
-            n: Number of assets
-            verbose: Display progress bar
-        Returns:
-            path: Simulated paths for log prices and volatility (shape: num_paths, n, num_timesteps + 1, 2)
-        """
-        num_paths, num_assets, num_timesteps = u.shape[:3]
-
-        # Simulate paths using the existing simulate_multi_GBM_exact function
-        simulated_prices = self.simulate_multi_GBM_exact(T=num_timesteps * dt, M=num_paths)
-
-        # `simulated_prices` shape is (num_assets, num_timesteps + 1, num_paths)
-        # Transpose and reshape to (num_paths, num_assets, num_timesteps + 1)
-        simulated_prices = torch.tensor(simulated_prices, dtype=torch.float64, device=device).permute(2, 0, 1)
-
-        # Initialize the path array with shape (num_paths, num_assets, num_timesteps + 1, 2)
-        path = torch.empty((num_paths, num_assets, num_timesteps + 1, 2), device=device)
-
-        # Fill in the log prices (index 0 in the last dimension)
-        path[:, :, :, 0] = torch.log(simulated_prices)
-
-        # Fill in the volatility (index 1 in the last dimension) using the provided sigma parameters
-        sigma_arr = params[:, 0].reshape(1, -1).repeat(num_paths, 1)
-        volatility = sigma_arr.unsqueeze(-1).repeat(1, 1, num_timesteps + 1)
-
-        path[:, :, :, 1] = volatility
-
-        return path
-
-
     # Calculate Delta using finite difference method
     def calculate_delta(self, pay_off, m=317, M=10_000, h=0.01, S0=None):
         # Initial asset prices at the start time T
@@ -412,8 +373,8 @@ class MultiBS:
             S0_minus[i] *= (1 - h)
             
             # Simulate final values with perturbed prices
-            V_S_plus = self.simulate_multi_GBM_exact(m, M, S0_plus)
-            V_S_minus = self.simulate_multi_GBM_exact(m, M, S0_minus)
+            V_S_plus = self.simulate_multi_GBM_antithetic(m, M, S0_plus)
+            V_S_minus = self.simulate_multi_GBM_antithetic(m, M, S0_minus)
             
             # Evaluate the payoff for perturbed values
             pay_off_plus = pay_off.evaluate_payoff(np.log(V_S_plus).transpose(2, 0, 1), True)
@@ -460,10 +421,10 @@ class MultiBS:
                 S0_ij_mm[j] -= h_scaled[j]
 
                 # Simulate option values with perturbed prices (using final time step)
-                V_S_ij_pp = self.simulate_multi_GBM_exact(m, M, S0_ij_pp)
-                V_S_ij_pm = self.simulate_multi_GBM_exact(m, M, S0_ij_pm)
-                V_S_ij_mp = self.simulate_multi_GBM_exact(m, M, S0_ij_mp)
-                V_S_ij_mm = self.simulate_multi_GBM_exact(m, M, S0_ij_mm)
+                V_S_ij_pp = self.simulate_multi_GBM_antithetic(m, M, S0_ij_pp)
+                V_S_ij_pm = self.simulate_multi_GBM_antithetic(m, M, S0_ij_pm)
+                V_S_ij_mp = self.simulate_multi_GBM_antithetic(m, M, S0_ij_mp)
+                V_S_ij_mm = self.simulate_multi_GBM_antithetic(m, M, S0_ij_mm)
 
                 # Apply the payoff evaluation to each simulated value with log-transformation
                 pay_off_ij_pp = pay_off.evaluate_payoff(np.log(V_S_ij_pp).transpose(2, 0, 1), True).mean()
