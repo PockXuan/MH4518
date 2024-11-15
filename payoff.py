@@ -21,9 +21,9 @@ class LSUnit(nn.Module):
         # Input is (asset, stock_price, vol, barrier_breached).flatten() tuple, where barrier_breached is boolean
         self.hidden1 = nn.Linear(4, 32)
         self.hidden2 = nn.Linear(32, 32) 
-        self.hidden4 = nn.Linear(32, 4) 
-        self.hidden5 = nn.Linear(4, 32) 
-        self.hidden6 = nn.Linear(32, 32)  
+        self.hidden3 = nn.Linear(32, 4) 
+        self.hidden4 = nn.Linear(4, 32) 
+        self.hidden5 = nn.Linear(32, 32)  
         self.output = nn.Linear(32, 1)
     
     def forward(self, x):
@@ -31,6 +31,9 @@ class LSUnit(nn.Module):
         d = x.clone()
         d = F.mish(self.hidden1(d))
         d = F.mish(self.hidden2(d))
+        d = F.mish(self.hidden3(d))
+        d = F.mish(self.hidden4(d))
+        d = F.mish(self.hidden5(d))
         d = F.softplus(self.output(d))
                 
         return d
