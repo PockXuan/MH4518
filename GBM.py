@@ -268,12 +268,12 @@ class MultiBS:
 
         # Create subplots for each asset
         fig, axes = plt.subplots(p, 1, figsize=(10, 5 * p), dpi=80, sharex=True)
-        
+        asset_labels=["UNH","PFE","MRK"]
         for i in range(p):
             ax = axes[i] if p > 1 else axes  # Select the appropriate axis if p > 1
             # Plot each path for asset i
             ax.plot(simulated_data[i], alpha=0.7)
-            ax.set_title(f'Simulated Paths for Asset {i+1}')
+            ax.set_title(f'Simulated Paths for Asset: {asset_labels[i]}')
             if show_barrier:
                 ax.axhline(y=self.barrier[i], color='red', linestyle='--', label='59% of Initial Value')
                 ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
@@ -329,7 +329,7 @@ class MultiBS:
         
         # Create subplots for each asset
         fig, axes = plt.subplots(p, 1, figsize=(10, 5 * p), dpi=80, sharex=True)
-        
+        asset_labels=["UNH","PFE","MRK"]
         for i in range(p):
             ax = axes[i] if p > 1 else axes  # Select the appropriate axis if p > 1
             # Plot each simulated path for asset i
@@ -342,7 +342,7 @@ class MultiBS:
             ax.annotate(f'{self.barrier[i]:.2f}', xy=(0, self.barrier[i]),
                     xytext=(-30, 0), textcoords='offset points',
                     color='red', fontsize=10, va='center', ha='right')
-            ax.set_title(f'Backtest Results for Asset {i+1}')
+            ax.set_title(f'Backtest Results for Asset: {asset_labels[i]}')
             ax.set_xlabel('Time Steps')
             ax.set_ylabel('Price')
             ax.legend(loc='upper left')

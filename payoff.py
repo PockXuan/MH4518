@@ -29,6 +29,7 @@ class LSUnit(nn.Module):
     def forward(self, x):
         
         d = x.clone()
+        d = d.to(device)
         d = F.mish(self.hidden1(d))
         d = F.mish(self.hidden2(d))
         d = F.mish(self.hidden3(d))
@@ -51,7 +52,7 @@ class CallablePayoff():
         self.calling_dates = [129, 189, 254]
         self.payoff_dates = [70, 132, 193, 257, 321]
         self.final_fixing_date = 316
-        self.S0 = torch.log(torch.tensor(S0)) # In order of UNH, PFE, MRK
+        self.S0 = torch.log(torch.tensor(S0)).to(device) # In order of UNH, PFE, MRK
 
         if time_elapsed <= 254:
             # Model inputs are discounted to initial fixing date and scaled to unity. 
@@ -60,6 +61,7 @@ class CallablePayoff():
             self.LSarray = []
             for _ in self.calling_dates:
                 model = LSUnit()
+                model.to(device)
                 optimiser = optim.Adam(model.parameters())
                 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimiser, 'min', 1.1**-1, 20)
                 self.LSarray = [(model, optimiser, scheduler)] + self.LSarray
@@ -70,7 +72,7 @@ class CallablePayoff():
 
         # Path index of log payoff is in (path #, asset #, timestep #)
 
-        path = torch.tensor(path)
+        path = torch.tensor(path).to(device)
         num_paths, _, num_timesteps = path.shape
         # path = path[torch.isfinite(path).all(dim=2).all(dim=1).reshape(-1,1,1).tile(1,3,num_timesteps)].reshape(-1,3,num_timesteps)
         # num_paths, _, num_timesteps = path.shape
@@ -149,7 +151,7 @@ class CallablePayoff():
 
         # Path index of log payoff is in (path #, asset #, timestep #)
 
-        paths = torch.tensor(paths)
+        paths = torch.tensor(paths).to(device)
         num_paths, _, num_timesteps = paths.shape
         paths = paths[torch.isfinite(paths).all(dim=2).all(dim=1).reshape(-1,1,1).tile(1,3,num_timesteps)].reshape(-1,3,num_timesteps)
         num_paths, _, num_timesteps = paths.shape
