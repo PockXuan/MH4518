@@ -22,9 +22,9 @@ def preprocess_stock_data(df):
 def load_data():
     """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
     # Load stock data
-    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/UNH.csv"))
-    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/PFE.csv"))
-    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/MRK.csv"))
+    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH.csv"))
+    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE.csv"))
+    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK.csv"))
 
     # Rename columns for clarity
     df1.columns = ['Date', 'stock_price_UNH']
@@ -35,7 +35,7 @@ def load_data():
     stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
 
     # Load and preprocess interest rates
-    rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
+    rates = pd.read_csv(os.getcwd() + "/MH4518/datasets/DGS10.csv").replace('.', np.nan).ffill()
     rates.columns = ['Date', 'true_rate']
     rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
     rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
@@ -48,7 +48,7 @@ def load_data():
 # Fit GARCH models for each stock and extract residuals and volatilities
 def fit_garch_models(data):
     """Fit GARCH models to stock simple returns and extract residuals and conditional volatilities."""
-    garch_models = {}
+    garch_models = {}    
     for stock in ['UNH', 'PFE', 'MRK']:
         garch_models[stock] = am(100 * data[f'simple_return_shock_{stock}'], vol='Garch', p=1, q=1).fit(disp='off')
     return garch_models
@@ -74,7 +74,7 @@ def dcc_garch_log_loss(x, shocks, sigma, q0):
     k = np.sqrt(1 + (2 * nu * num) / (denom * (nu - (nu - 2) * iota_norm)))
     
     Omega = np.eye(3)
-    if not np.isclose(iota_norm, 0):
+    if not np.isclose(iota_norm, 0, atol=1e-6): 
         Omega = Omega + iota_norm**-1 * (-1 + denom * (k - 1) / num) * iota @ iota.T
     Omega = Omega * (1 - 2 / nu)
     xi = -np.sqrt(nu / np.pi) * (g1 / g2) * (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
@@ -94,6 +94,7 @@ def dcc_garch_log_loss(x, shocks, sigma, q0):
         v = np.linalg.solve(np.linalg.cholesky(H_t), a_t) - xi
         Q_a_t = v.T @ np.linalg.solve(Omega, v)
         loss -= 0.5 * (nu + 3) * np.log(1 + Q_a_t / nu)
+        loss += np.log(stats.t.pdf(iota.T @ v * np.sqrt((nu + 3) / (Q_a_t + nu)), nu + 3))
         loss -= 0.5 * np.log(np.linalg.det(R_t))
     
     return -loss
@@ -121,15 +122,8 @@ def multivariate_skew_t(nu, iota, steps, paths, qmc_gen=None, err_cov=None):
     if qmc_gen is None or err_cov is None:
         d = np.diag(np.sqrt(np.diag(Omega)))
         delta = d @ iota # Skew parameter
-        skew_star = (Omega @ delta).flatten()
-
-        def loss(skew_guess, delta):
-            skew_guess = skew_guess.reshape(3,1)
-            v = np.linalg.solve(Omega, skew_guess)
-            v = v / np.sqrt(1 - delta.T @ v)
-            return np.sum((v - delta)**2)
-        skew_star = sp.optimize.minimize(loss, skew_star, (delta,), method='SLSQP').x
-
+        skew_star = (Omega @ delta) / np.sqrt(1 + delta.T @ Omega @ delta)
+    
         err_cov = np.block([
             [1, skew_star.reshape(1,-1)],
             [skew_star.reshape(-1,1), Omega]
@@ -150,7 +144,7 @@ def multivariate_skew_t(nu, iota, steps, paths, qmc_gen=None, err_cov=None):
     # Combine everything
     xi = -np.sqrt(nu / np.pi) * (g1 / g2) * (Omega @ iota) / np.sqrt(1 + iota.T @ Omega @ iota)
     brownian = (xi.reshape(1,1,3) + (norm / np.sqrt(chi))).transpose(0,2,1)
-
+    
     return brownian, qmc_gen, err_cov
 
 # Forecast future shocks based on the optimized DCC-GARCH parameters
@@ -182,10 +176,11 @@ def forecast_dcc_garch(steps, num_paths, r, s0, params, garch_models, shocks, q0
         d_t = np.diag(np.sqrt(univariate_vars[i,:] / 10000))
         h_t = d_t @ q_star_t @ q_t @ q_star_t @ d_t
         next_shock = np.linalg.cholesky(h_t) @ a_t
+        
         next_stock_price = np.clip(forecast[:,:,i].reshape(num_paths, 3, 1) * (1 + r * dt + next_shock * np.sqrt(dt)), 0, None)
         forecast = np.concatenate((forecast, next_stock_price.reshape(num_paths,3,1)), axis=2)
-        
         q_t =  (1 - a - b) * q0 + a * (a_t @ a_t.transpose(0,2,1)) + b * q_t
+        
         q_star_t = np.apply_along_axis(np.diag, -1, np.diagonal(q_t, axis1=1, axis2=2)**-0.5)
     
     return forecast, qmc_gen, err_cov
@@ -205,7 +200,7 @@ class GARCH():
         self.qmc_gen = None
         self.err_cov = None
     
-    def fit(self, verbose=False):
+    def fit(self, optimized_parameters=None, verbose=False):
 
         self.garch_models = fit_garch_models(self.shocks)
 
@@ -222,22 +217,26 @@ class GARCH():
         self.q0 = np.cov(self.z, rowvar=False)
         self.r = self.data['true_rate'].iloc[self.current_date]
         
-        initial_params = [0.25, 0.25, 3, 0, 0, 0]
-        self.optimized_params = sp.optimize.minimize(
-            dcc_garch_log_loss, initial_params, args=(self.z, self.sigma, self.q0), method='SLSQP',
-            bounds=[(-2.3, 2.3), (-2.3, 2.3), (2, None), (None, None), (None, None), (None, None)]
-        ).x
-        
-        if verbose:
-            a = (np.tanh(self.optimized_params[0]) + 1) / 2
-            b = ((np.tanh(self.optimized_params[1]) + 1) / 2) * (1-a)
-            nu = self.optimized_params[2]
-            iota = self.optimized_params[3:].reshape(-1, 1)
-            print('Optimised parameters:')
-            print('a:', a)
-            print('b:', b)
-            print('nu:', nu)
-            print('iota:', iota)
+        if optimized_parameters is not None:
+            self.optimized_params = optimized_parameters
+        else:
+            initial_params = [0.25, 0.25, 3, 0, 0, 0]
+            self.optimized_params = sp.optimize.minimize(
+                dcc_garch_log_loss, initial_params, args=(self.z, self.sigma, self.q0), method='SLSQP',
+                bounds=[(-2.3, 2.3), (-2.3, 2.3), (2.001, None), (None, None), (None, None), (None, None)]
+            ).x
+            
+            if verbose:
+                a = (np.tanh(self.optimized_params[0]) + 1) / 2
+                b = ((np.tanh(self.optimized_params[1]) + 1) / 2) * (1-a)
+                nu = self.optimized_params[2]
+                iota = self.optimized_params[3:].reshape(-1, 1)
+                print('Optimised parameters:')
+                print('a:', a)
+                print('b:', b)
+                print('nu:', nu)
+                print('iota:', iota)
+                print(self.optimized_params)
     
     def forecast(self, steps, num_paths, s0=None):
         if s0 is None:
@@ -251,7 +250,8 @@ class GARCH():
 
 if __name__=='__main__':
     model = GARCH()
-    model.fit(True)
+    # optimized_params = np.array([1.1026523,   1.10273227,  2.61810503, -1.55103818, -1.29675928, -0.38673035])
+    model.fit(None, True)
     forecast = model.forecast(250, 1000)
 
     data = load_data().loc[411:,[f'stock_price_UNH']]
@@ -267,20 +267,20 @@ if __name__=='__main__':
     plt.plot(data[:250,0], color='red', label="Actual Price")
     plt.show()
 
-    data = load_data().loc[412:,[f'stock_price_PFE']]
-    data = np.array(data)
+    # data = load_data().loc[412:,[f'stock_price_PFE']]
+    # data = np.array(data)
 
-    # plt.plot(np.log(forecast[:,1,:].T), color='blue', alpha=0.3)
-    # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
-    plt.plot(forecast[:,1,:].T, color='blue', alpha=0.3)
-    plt.plot(data[:250,0], color='red', label="Actual Price")
-    plt.show()
+    # # plt.plot(np.log(forecast[:,1,:].T), color='blue', alpha=0.3)
+    # # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    # plt.plot(forecast[:,1,:].T, color='blue', alpha=0.3)
+    # plt.plot(data[:250,0], color='red', label="Actual Price")
+    # plt.show()
 
-    data = load_data().loc[412:,[f'stock_price_MRK']]
-    data = np.array(data)
+    # data = load_data().loc[412:,[f'stock_price_MRK']]
+    # data = np.array(data)
 
-    # plt.plot(np.log(forecast[:,2,:].T), color='blue', alpha=0.3)
-    # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
-    plt.plot(forecast[:,2,:].T, color='blue', alpha=0.3)
-    plt.plot(data[:250,0], color='red', label="Actual Price")
-    plt.show()
+    # # plt.plot(np.log(forecast[:,2,:].T), color='blue', alpha=0.3)
+    # # plt.plot(np.log(data[:250,0]), color='red', label="Actual Price")
+    # plt.plot(forecast[:,2,:].T, color='blue', alpha=0.3)
+    # plt.plot(data[:250,0], color='red', label="Actual Price")
+    # plt.show()

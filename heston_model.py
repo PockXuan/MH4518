@@ -198,9 +198,9 @@ class HestonModel:
 
         """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
         # Load stock data
-        df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/UNH.csv"))
-        df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/PFE.csv"))
-        df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/MRK.csv"))
+        df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH.csv"))
+        df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE.csv"))
+        df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK.csv"))
 
         # Rename columns for clarity
         df1.columns = ['Date', 'Open_UNH', 'High_UNH', 'Low_UNH', 'Close_UNH', 'log_return_UNH']
@@ -211,7 +211,7 @@ class HestonModel:
         stock_df = df1.merge(df2, on='Date').merge(df3, on='Date').iloc[:starting_date]
 
         # Load and preprocess interest rates
-        rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
+        rates = pd.read_csv(os.getcwd() + "/MH4518/datasets/DGS10.csv").replace('.', np.nan).ffill()
         rates.columns = ['Date', 'true_rate']
         rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
         rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date
@@ -242,9 +242,9 @@ class HestonModel:
         rs_var_MRK = np.log(stock_df['High_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['High_MRK'] / stock_df['Close_MRK']) + np.log(stock_df['Low_MRK'] / stock_df['Open_MRK']) * np.log(stock_df['Low_MRK'] / stock_df['Close_MRK'])
 
         k = 0.34 / (1.34 + 21 / 19)
-        stock_df['yz_var_UNH'] = np.sqrt(overnight_UNH.rolling(window=20).mean() + k * open_close_UNH.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_UNH.rolling(window=20).mean()))
-        stock_df['yz_var_PFE'] = np.sqrt(overnight_PFE.rolling(window=20).mean() + k * open_close_PFE.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_PFE.rolling(window=20).mean()))
-        stock_df['yz_var_MRK'] = np.sqrt(overnight_MRK.rolling(window=20).mean() + k * open_close_MRK.rolling(window=20).mean() + (1 - k) * np.sqrt(rs_var_MRK.rolling(window=20).mean()))
+        stock_df['yz_var_UNH'] = np.sqrt(overnight_UNH.rolling(window=20).mean() + k * open_close_UNH.rolling(window=20).mean() + (1 - k) * rs_var_UNH.rolling(window=20).mean())
+        stock_df['yz_var_PFE'] = np.sqrt(overnight_PFE.rolling(window=20).mean() + k * open_close_PFE.rolling(window=20).mean() + (1 - k) * rs_var_PFE.rolling(window=20).mean())
+        stock_df['yz_var_MRK'] = np.sqrt(overnight_MRK.rolling(window=20).mean() + k * open_close_MRK.rolling(window=20).mean() + (1 - k) * rs_var_MRK.rolling(window=20).mean())
         
         # MLE for CIR process (Kladivk, 2007) MAXIMUM LIKELIHOOD ESTIMATION OF THE COX-INGERSOLL-ROSS PROCESS: THE MATLAB IMPLEMENTATION
         data = stock_df[[f'yz_var_{stock}' for stock in ['UNH', 'PFE', 'MRK']] + [f'log_return_{stock}' for stock in ['UNH', 'PFE', 'MRK']] + ['true_rate']]
@@ -339,7 +339,7 @@ class HestonModel:
         q = 2 * kappa * theta / sigma**2 - 1
         
         loss = u + v - 0.5 * q * np.log(v / u) - np.log(special.iv(q, 2 * np.sqrt(u * v))) # Removed constant terms
-        loss = loss.sum()
+        loss = loss.sum() + len(loss) * np.log(c)
         
         return loss
    
@@ -696,6 +696,26 @@ if __name__ == "__main__":
     plt.clf()
     
     plt.plot(paths[:,0,:,1].T.detach().numpy())
+    plt.title("Volatility")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(paths[:,1,:,0].T.detach().numpy())
+    plt.title("Log price")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(paths[:,1,:,1].T.detach().numpy())
+    plt.title("Volatility")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(paths[:,2,:,0].T.detach().numpy())
+    plt.title("Log price")
+    plt.show()
+    plt.clf()
+    
+    plt.plot(paths[:,2,:,1].T.detach().numpy())
     plt.title("Volatility")
     plt.show()
     plt.clf()
