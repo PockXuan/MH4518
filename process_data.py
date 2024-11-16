@@ -22,9 +22,9 @@ def preprocess_stock_data(df):
 def load_data():
     """Load stock data for UNH, PFE, MRK, and interest rates, preprocess, and merge."""
     # Load stock data
-    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/UNH.csv"))
-    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/PFE.csv"))
-    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/MH4518/datasets/MRK.csv"))
+    df1 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/UNH.csv"))
+    df2 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/PFE.csv"))
+    df3 = preprocess_stock_data(pd.read_csv(os.getcwd() + "/datasets/MRK.csv"))
 
     # Rename columns for clarity
     df1.columns = ['Date', 'stock_price_UNH']
@@ -35,7 +35,7 @@ def load_data():
     stock_df = df1.merge(df2, on='Date').merge(df3, on='Date')
 
     # Load and preprocess interest rates
-    rates = pd.read_csv(os.getcwd() + "/MH4518/datasets/DGS10.csv").replace('.', np.nan).ffill()
+    rates = pd.read_csv(os.getcwd() + "/datasets/DGS10.csv").replace('.', np.nan).ffill()
     rates.columns = ['Date', 'true_rate']
     rates['true_rate'] = pd.to_numeric(rates['true_rate']) / 100  # Convert to decimal
     rates['Date'] = pd.to_datetime(rates['Date']).dt.tz_localize(None).dt.date

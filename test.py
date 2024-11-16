@@ -31,7 +31,9 @@ print(params, cov)
 # cov_eigvals, cov_eigvecs = torch.linalg.eigh(cov)
 # cov = cov_eigvecs @ torch.diag(torch.clamp(cov_eigvals, 1e-6)) @ cov_eigvecs.T
 
-def get_brownian(paths):
+def get_brownian(paths, num_steps=317):
+    sobol = torch.quasirandom.SobolEngine(3 * 2 * num_steps)
+    
     # Common random numbers
     paths //= 2
     uni = sobol.draw(paths).reshape(paths,3,-1,2)[1:,:,:,:]
@@ -213,149 +215,150 @@ def hedge(product_delta, product_gamma, kimblp_delta, kimblp_gamma, PFE_delta, P
     return number_of_baskets, number_of_puts, torch.tensor(number_of_stocks)
 
 
-# Train model
-train(2048, 1000)
+if __name__ == '__main__':
+    # Train model
+    train(2048, 1000)
 
-# # Find product sensitivities
-# product_delta = find_delta(model.evaluate_payoff, paths)
-# product_gamma = find_gamma_cov(model.evaluate_payoff, paths)
+    # # Find product sensitivities
+    # product_delta = find_delta(model.evaluate_payoff, paths)
+    # product_gamma = find_gamma_cov(model.evaluate_payoff, paths)
 
-product_delta = torch.tensor([0.2153, 4.1182, 0.6588])
+    product_delta = torch.tensor([0.2153, 4.1182, 0.6588])
 
-product_gamma = torch.tensor([[ 0.0020, -0.1705,  0.0459],
-                              [ 0.1235,  0.7053, -0.2170],
-                              [-0.0231,  0.4444,  0.1436]])
+    product_gamma = torch.tensor([[ 0.0020, -0.1705,  0.0459],
+                                [ 0.1235,  0.7053, -0.2170],
+                                [-0.0231,  0.4444,  0.1436]])
 
-print('Product delta:')
-print(product_delta)
-print('Product gamma:')
-print(product_gamma)
+    print('Product delta:')
+    print(product_delta)
+    print('Product gamma:')
+    print(product_gamma)
 
-# # Find basket sensitivities
-# kimblp_delta = find_delta(knock_in_min_basket_long_put, paths)
-# kimblp_gamma = find_gamma_cov(knock_in_min_basket_long_put, paths)
+    # # Find basket sensitivities
+    # kimblp_delta = find_delta(knock_in_min_basket_long_put, paths)
+    # kimblp_gamma = find_gamma_cov(knock_in_min_basket_long_put, paths)
 
-kimblp_delta = torch.tensor([-0.0278, -0.5626,  0.0514])
+    kimblp_delta = torch.tensor([-0.0278, -0.5626,  0.0514])
 
-kimblp_gamma = torch.tensor([[ 0.0052, -0.0241, -0.0268],
-                             [ 0.1589, -2.0160, -0.4437],
-                             [-0.0276, -0.4629,  0.2484]])
+    kimblp_gamma = torch.tensor([[ 0.0052, -0.0241, -0.0268],
+                                [ 0.1589, -2.0160, -0.4437],
+                                [-0.0276, -0.4629,  0.2484]])
 
-print('Knock in basket delta:')
-print(kimblp_delta)
-print('Knock in basket gamma:')
-print(kimblp_gamma)
+    print('Knock in basket delta:')
+    print(kimblp_delta)
+    print('Knock in basket gamma:')
+    print(kimblp_gamma)
 
-# # Find PFE long put sensitivities
-# PFE_delta = find_delta(knock_in_PFE_long_put, paths)
-# PFE_gamma = find_gamma_cov(knock_in_PFE_long_put, paths)
+    # # Find PFE long put sensitivities
+    # PFE_delta = find_delta(knock_in_PFE_long_put, paths)
+    # PFE_gamma = find_gamma_cov(knock_in_PFE_long_put, paths)
 
-PFE_delta = torch.tensor([0.0508, 0.5763, 0.0903])
+    PFE_delta = torch.tensor([0.0508, 0.5763, 0.0903])
 
-PFE_gamma = torch.tensor([[ 0.0025, -0.2873,  0.0404],
-                          [ 0.0849, -1.0836, -0.2329],
-                          [-0.0272,  0.4523,  0.0560]])
+    PFE_gamma = torch.tensor([[ 0.0025, -0.2873,  0.0404],
+                            [ 0.0849, -1.0836, -0.2329],
+                            [-0.0272,  0.4523,  0.0560]])
+            
+    print('PFE delta:')
+    print(PFE_delta)
+    print('PFE gamma:')
+    print(PFE_gamma)
+
+    # # Find stock sensitivities
+    # stock_delta = []
+    # stock_gamma = []
+    # for stock in [0, 1, 2]:
+    #     stock_delta.append(find_delta(lambda paths:stock_payoff(paths, stock), paths))
+    #     stock_gamma.append(find_gamma_cov(lambda paths:stock_payoff(paths, stock), paths))
+
+    #     print(f'Stock {stock} delta:')
+    #     print(stock_delta[stock])
+    #     print(f'Stock {stock} gamma:')
+    #     print(stock_gamma[stock])
+
+    stock_0_delta = torch.tensor([ 0.1040, -1.7954, -0.4333])
+
+    stock_0_gamma = torch.tensor([[ 0.0164,  0.2444, -0.1134],
+                                [ 0.4150, -5.2465, -0.7622],
+                                [ 0.0554,  2.1684,  0.1792]])
+            
+    stock_1_delta = torch.tensor([ 0.0461,  0.6256, -0.1266])
+
+    stock_1_gamma = torch.tensor([[ 0.0125, -0.3442,  0.0114],
+                                [ 0.1474, -2.5728, -0.2533],
+                                [-0.0126, -1.0182, -0.1964]])
+
+    stock_2_delta = torch.tensor([-0.0244, -0.1774,  0.1016])
+
+    stock_2_gamma = torch.tensor([[-1.1913e-02,  1.3465e-03,  1.0905e-01],
+                                [-6.0174e-02, -2.2106e+00, -4.4639e-01],
+                                [-1.0333e-01,  5.6564e-01, -4.3506e-01]])
+
+    stock_delta = [stock_0_delta, stock_1_delta, stock_2_delta]
+    stock_gamma = [stock_0_gamma, stock_1_gamma, stock_2_gamma]
+
+    print(f'Stock deltas:')
+    print(stock_delta)
+    print(f'Stock gammas:')
+    print(stock_gamma)
+
+    # # Optimise portfolio
+    # number_of_baskets, number_of_pfe, number_of_stocks = hedge(product_delta, product_gamma, kimblp_delta, kimblp_gamma, PFE_delta, PFE_gamma, stock_delta)
+
+    # Original gamma:
+    # 1.5564871520558712
+    # Hedged gamma:
+    # 0.7288721331382404
+    # Original delta:
+    # 17.439942770000002
+    # Gamma-hedged delta:
+    # 16.60861943852973
+    # Hedged delta:
+    # 5.588913652538903e-11
+
+    number_of_baskets = 0.183953990102676
+    number_of_pfe = 0
+    number_of_stocks = [ -1.7143, -23.6223, -43.3234]
+
+    print('Number of baskets:')
+    print(number_of_baskets)
+    print('Number of PFE:')
+    print(number_of_pfe)
+    print('Number of stocks:')
+    print(number_of_stocks)
+
+    def portfolio_payoff(paths, number_of_baskets, number_of_pfe, number_of_stocks):
         
-print('PFE delta:')
-print(PFE_delta)
-print('PFE gamma:')
-print(PFE_gamma)
-
-# # Find stock sensitivities
-# stock_delta = []
-# stock_gamma = []
-# for stock in [0, 1, 2]:
-#     stock_delta.append(find_delta(lambda paths:stock_payoff(paths, stock), paths))
-#     stock_gamma.append(find_gamma_cov(lambda paths:stock_payoff(paths, stock), paths))
-
-#     print(f'Stock {stock} delta:')
-#     print(stock_delta[stock])
-#     print(f'Stock {stock} gamma:')
-#     print(stock_gamma[stock])
-
-stock_0_delta = torch.tensor([ 0.1040, -1.7954, -0.4333])
-
-stock_0_gamma = torch.tensor([[ 0.0164,  0.2444, -0.1134],
-                              [ 0.4150, -5.2465, -0.7622],
-                              [ 0.0554,  2.1684,  0.1792]])
+        product_payoff = model.evaluate_payoff(paths)
         
-stock_1_delta = torch.tensor([ 0.0461,  0.6256, -0.1266])
+        basket_payoff = knock_in_min_basket_long_put(paths)
+        pfe_payoff = knock_in_PFE_long_put(paths)
+        
+        stocks_payoff = 1000 * (torch.exp(paths[:,:,-1] - paths[:,:,0]) - 1)
+        
+        # print(torch.cat((product_payoff, basket_payoff, pfe_payoff, number_of_stocks[0] * stocks_payoff[:,0].reshape(-1,1), number_of_stocks[1] * stocks_payoff[:,1].reshape(-1,1), number_of_stocks[2] * stocks_payoff[:,2].reshape(-1,1)), dim=1))
+        
+        number_of_stocks = torch.tensor(number_of_stocks).reshape(1,3)
+        stocks_payoff = (stocks_payoff * number_of_stocks).sum(dim=1, keepdim=True)
+        
+        final_payoff = product_payoff + number_of_baskets * basket_payoff + number_of_pfe * pfe_payoff + stocks_payoff
+        
+        return final_payoff
 
-stock_1_gamma = torch.tensor([[ 0.0125, -0.3442,  0.0114],
-                              [ 0.1474, -2.5728, -0.2533],
-                              [-0.0126, -1.0182, -0.1964]])
+    hedged_payoff = lambda paths: portfolio_payoff(paths, number_of_baskets, number_of_pfe, number_of_stocks)
 
-stock_2_delta = torch.tensor([-0.0244, -0.1774,  0.1016])
+    # Find portfolio sensitivities
+    portfolio_delta = find_delta(hedged_payoff, paths)
+    portfolio_gamma = find_gamma_cov(hedged_payoff, paths)
 
-stock_2_gamma = torch.tensor([[-1.1913e-02,  1.3465e-03,  1.0905e-01],
-                              [-6.0174e-02, -2.2106e+00, -4.4639e-01],
-                              [-1.0333e-01,  5.6564e-01, -4.3506e-01]])
+    # portfolio_delta = torch.tensor([   4.8150, -175.3534,   59.2100])
 
-stock_delta = [stock_0_delta, stock_1_delta, stock_2_delta]
-stock_gamma = [stock_0_gamma, stock_1_gamma, stock_2_gamma]
+    # portfolio_gamma = torch.tensor([[-5.4726e-01,  1.5610e+01, -1.5366e+01],
+    #                                 [-1.2436e+01, -7.3499e+02, -5.1564e+01],
+    #                                 [ 4.0473e+00,  1.0471e+02,  2.6609e+01]])
 
-print(f'Stock deltas:')
-print(stock_delta)
-print(f'Stock gammas:')
-print(stock_gamma)
-
-# # Optimise portfolio
-# number_of_baskets, number_of_pfe, number_of_stocks = hedge(product_delta, product_gamma, kimblp_delta, kimblp_gamma, PFE_delta, PFE_gamma, stock_delta)
-
-# Original gamma:
-# 1.5564871520558712
-# Hedged gamma:
-# 0.7288721331382404
-# Original delta:
-# 17.439942770000002
-# Gamma-hedged delta:
-# 16.60861943852973
-# Hedged delta:
-# 5.588913652538903e-11
-
-number_of_baskets = 0.183953990102676
-number_of_pfe = 0
-number_of_stocks = [ -1.7143, -23.6223, -43.3234]
-
-print('Number of baskets:')
-print(number_of_baskets)
-print('Number of PFE:')
-print(number_of_pfe)
-print('Number of stocks:')
-print(number_of_stocks)
-
-def portfolio_payoff(paths, number_of_baskets, number_of_pfe, number_of_stocks):
-    
-    product_payoff = model.evaluate_payoff(paths)
-    
-    basket_payoff = knock_in_min_basket_long_put(paths)
-    pfe_payoff = knock_in_PFE_long_put(paths)
-    
-    stocks_payoff = 1000 * (torch.exp(paths[:,:,-1] - paths[:,:,0]) - 1)
-    
-    # print(torch.cat((product_payoff, basket_payoff, pfe_payoff, number_of_stocks[0] * stocks_payoff[:,0].reshape(-1,1), number_of_stocks[1] * stocks_payoff[:,1].reshape(-1,1), number_of_stocks[2] * stocks_payoff[:,2].reshape(-1,1)), dim=1))
-    
-    number_of_stocks = torch.tensor(number_of_stocks).reshape(1,3)
-    stocks_payoff = (stocks_payoff * number_of_stocks).sum(dim=1, keepdim=True)
-    
-    final_payoff = product_payoff + number_of_baskets * basket_payoff + number_of_pfe * pfe_payoff + stocks_payoff
-    
-    return final_payoff
-
-hedged_payoff = lambda paths: portfolio_payoff(paths, number_of_baskets, number_of_pfe, number_of_stocks)
-
-# Find portfolio sensitivities
-portfolio_delta = find_delta(hedged_payoff, paths)
-portfolio_gamma = find_gamma_cov(hedged_payoff, paths)
-
-# portfolio_delta = torch.tensor([   4.8150, -175.3534,   59.2100])
-
-# portfolio_gamma = torch.tensor([[-5.4726e-01,  1.5610e+01, -1.5366e+01],
-#                                 [-1.2436e+01, -7.3499e+02, -5.1564e+01],
-#                                 [ 4.0473e+00,  1.0471e+02,  2.6609e+01]])
-
-print('Portfolio delta:')
-print(portfolio_delta)
-print('Portfolio gamma:')
-print(portfolio_gamma)
+    print('Portfolio delta:')
+    print(portfolio_delta)
+    print('Portfolio gamma:')
+    print(portfolio_gamma)
 
