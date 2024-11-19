@@ -28,3 +28,5 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+5. Run the main code at main.ipynb
