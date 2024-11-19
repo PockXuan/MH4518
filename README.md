@@ -28,17 +28,3 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
-
-## What was implemented thus far
-
-- Geometric Brownian Motion Class
-
-  - Able to simulate M paths for N steps over time T
-  - Plotting of the simulations
-
-- Helper functions:
-  - Parameter esimation from given dataframe: return $ \mu, {\sigma^2}, v$
-  - Update datasets by running
-    ```bash
-    python update_datasets.py
-    ```
